@@ -621,4 +621,4 @@ Apache License 2.0
 
 **프로젝트**: 원형 교차로 이상 거동 검출 시스템 <br>
 **개발 환경**: ROS 2 Humble, Autoware Universe <br>
-**센서**: 고정식 LiDAR (기둥 위) 및 시험차 <br>
+**센서**: Ouster OS1-64 <br>
