@@ -1,0 +1,671 @@
+// Copyright 2025 TIER IV, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "abnormal_behavior_detector/abnormal_behavior_detector_node.hpp"
+
+#include <tier4_autoware_utils/geometry/geometry.hpp>
+#include <tier4_autoware_utils/math/unit_conversion.hpp>
+
+#include <lanelet2_core/geometry/Lanelet.h>
+#include <tf2/utils.h>
+
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace abnormal_behavior_detector
+{
+
+AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOptions & options)
+: Node("abnormal_behavior_detector", options)
+{
+  using std::placeholders::_1;
+
+  // Parameters
+  dist_threshold_for_searching_lanelet_ =
+    declare_parameter<double>("dist_threshold_for_searching_lanelet", 5.0);
+  delta_yaw_threshold_for_searching_lanelet_ =
+    declare_parameter<double>("delta_yaw_threshold_for_searching_lanelet", 0.785);  // 45도
+  wrong_way_angle_threshold_ =
+    declare_parameter<double>("wrong_way_angle_threshold", 2.356);  // 135도 (3π/4)
+  consecutive_count_threshold_ = declare_parameter<int>("consecutive_count_threshold", 3);
+  speed_threshold_ratio_ = declare_parameter<double>("speed_threshold_ratio", 1.2);
+  min_speed_threshold_ = declare_parameter<double>("min_speed_threshold", 0.5);  // m/s
+  history_buffer_size_ = declare_parameter<int>("history_buffer_size", 10);
+  history_timeout_ = declare_parameter<double>("history_timeout", 3.0);  // seconds
+  position_based_id_grid_size_ = declare_parameter<double>("position_based_id_grid_size", 3.0);  // m
+  use_position_based_tracking_ = declare_parameter<bool>("use_position_based_tracking", true);
+
+  // Transform listener
+  transform_listener_ = std::make_shared<tier4_autoware_utils::TransformListener>(this);
+
+  // Subscribers
+  sub_objects_ = create_subscription<PredictedObjects>(
+    "~/input/objects", rclcpp::QoS{1},
+    std::bind(&AbnormalBehaviorDetectorNode::onObjects, this, _1));
+
+  sub_map_ = create_subscription<HADMapBin>(
+    "~/input/vector_map", rclcpp::QoS{1}.transient_local(),
+    std::bind(&AbnormalBehaviorDetectorNode::onMap, this, _1));
+
+  // Publishers
+  pub_abnormal_objects_ = create_publisher<PredictedObjects>("~/output/abnormal_objects", 1);
+  pub_debug_markers_ =
+    create_publisher<visualization_msgs::msg::MarkerArray>("~/debug/markers", 1);
+  pub_status_ = create_publisher<AbnormalBehaviorStatus>("~/output/status", 1);
+  pub_debug_info_ = create_publisher<ObjectDebugInfo>("~/output/debug_info", 1);
+  pub_processing_time_ = create_publisher<Float64Stamped>("~/debug/processing_time_ms", 1);
+
+  RCLCPP_INFO(get_logger(), "AbnormalBehaviorDetectorNode initialized");
+  RCLCPP_INFO(get_logger(), "  Outputs:");
+  RCLCPP_INFO(get_logger(), "    - ~/output/abnormal_objects (PredictedObjects)");
+  RCLCPP_INFO(get_logger(), "    - ~/output/status (AbnormalBehaviorStatus)");
+  RCLCPP_INFO(get_logger(), "    - ~/output/debug_info (ObjectDebugInfo)");
+  RCLCPP_INFO(get_logger(), "    - ~/debug/processing_time_ms (Float64Stamped)");
+}
+
+void AbnormalBehaviorDetectorNode::onMap(const HADMapBin::ConstSharedPtr msg)
+{
+  RCLCPP_INFO(get_logger(), "Map received");
+  lanelet_map_ptr_ = std::make_shared<lanelet::LaneletMap>();
+  lanelet::utils::conversion::fromBinMsg(*msg, lanelet_map_ptr_);
+
+  // Traffic rules 생성
+  traffic_rules_ptr_ = lanelet::traffic_rules::TrafficRulesFactory::create(
+    lanelet::Locations::Germany, lanelet::Participants::Vehicle);
+
+  // Routing graph 생성
+  routing_graph_ptr_ = lanelet::routing::RoutingGraph::build(*lanelet_map_ptr_, *traffic_rules_ptr_);
+
+  RCLCPP_INFO(
+    get_logger(), "Map loaded: %lu lanelets", lanelet_map_ptr_->laneletLayer.size());
+}
+
+void AbnormalBehaviorDetectorNode::onObjects(const PredictedObjects::ConstSharedPtr msg)
+{
+  if (!lanelet_map_ptr_) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Map not loaded yet");
+    return;
+  }
+
+  // 처리 시작 시간
+  const auto start_time = std::chrono::high_resolution_clock::now();
+
+  // 이상 거동 객체 리스트
+  std::vector<std::pair<PredictedObject, AbnormalBehaviorInfo>> abnormal_objects;
+
+  // 타입별 카운트
+  int wrong_way_count = 0;
+  int over_speed_count = 0;
+  int under_speed_count = 0;
+  int abnormal_stop_count = 0;
+
+  // 각 객체에 대해 이상 거동 검출
+  for (const auto & object : msg->objects) {
+    ObjectDebugInfo debug_info;
+    debug_info.header = msg->header;
+
+    auto behavior_info = detectAbnormalBehavior(object, debug_info);
+
+    // Debug info 발행
+    pub_debug_info_->publish(debug_info);
+
+    if (behavior_info.type != AbnormalBehaviorType::NORMAL) {
+      abnormal_objects.push_back({object, behavior_info});
+
+      // 타입별 카운트
+      switch (behavior_info.type) {
+        case AbnormalBehaviorType::WRONG_WAY:
+          wrong_way_count++;
+          RCLCPP_WARN(
+            get_logger(), "[WRONG-WAY] %s at (%.1f, %.1f)",
+            behavior_info.object_id.c_str(),
+            object.kinematics.initial_pose_with_covariance.pose.position.x,
+            object.kinematics.initial_pose_with_covariance.pose.position.y);
+          break;
+        case AbnormalBehaviorType::OVER_SPEED:
+          over_speed_count++;
+          break;
+        case AbnormalBehaviorType::UNDER_SPEED:
+          under_speed_count++;
+          break;
+        case AbnormalBehaviorType::ABNORMAL_STOP:
+          abnormal_stop_count++;
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  // 이상 거동 객체 발행
+  if (!abnormal_objects.empty()) {
+    PredictedObjects abnormal_msg;
+    abnormal_msg.header = msg->header;
+    for (const auto & [obj, info] : abnormal_objects) {
+      abnormal_msg.objects.push_back(obj);
+    }
+    pub_abnormal_objects_->publish(abnormal_msg);
+
+    // 디버그 마커 발행
+    auto markers = createDebugMarkers(abnormal_objects);
+    pub_debug_markers_->publish(markers);
+  }
+
+  // 처리 종료 시간 및 시간 계산
+  const auto end_time = std::chrono::high_resolution_clock::now();
+  const auto processing_time_us =
+    std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+  const double processing_time_ms = processing_time_us / 1000.0;
+
+  // Status 토픽 발행
+  AbnormalBehaviorStatus status;
+  status.header = msg->header;
+  status.has_abnormal_behavior = !abnormal_objects.empty();
+  status.total_objects = msg->objects.size();
+  status.abnormal_objects_count = abnormal_objects.size();
+  status.wrong_way_count = wrong_way_count;
+  status.over_speed_count = over_speed_count;
+  status.under_speed_count = under_speed_count;
+  status.abnormal_stop_count = abnormal_stop_count;
+  status.processing_time_ms = processing_time_ms;
+  pub_status_->publish(status);
+
+  // Processing time 토픽 발행
+  Float64Stamped processing_time_msg;
+  processing_time_msg.stamp = msg->header.stamp;
+  processing_time_msg.data = processing_time_ms;
+  pub_processing_time_->publish(processing_time_msg);
+
+  // 오래된 이력 삭제
+  cleanupOldHistory(msg->header.stamp);
+}
+
+AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
+  const PredictedObject & object, ObjectDebugInfo & debug_info)
+{
+  AbnormalBehaviorInfo info;
+
+  // 위치 기반 추적 사용 시 stable ID 생성, 아니면 UUID 사용
+  if (use_position_based_tracking_) {
+    info.object_id = getStableObjectId(object);
+  } else {
+    info.object_id = uuidToString(object.object_id);
+  }
+
+  info.type = AbnormalBehaviorType::NORMAL;
+  info.confidence = 0.0;
+  info.description = "Normal";
+
+  const auto & pos = object.kinematics.initial_pose_with_covariance.pose.position;
+  const double yaw = tf2::getYaw(object.kinematics.initial_pose_with_covariance.pose.orientation);
+
+  // Debug info 기본 정보
+  debug_info.stable_object_id = info.object_id;
+  debug_info.uuid = uuidToString(object.object_id).substr(0, 8);
+  debug_info.position = pos;
+  debug_info.yaw_rad = yaw;
+  debug_info.yaw_deg = yaw * 180.0 / M_PI;
+
+  // 속도 정보
+  const double speed = getObjectSpeed(object);
+  debug_info.speed_ms = speed;
+  debug_info.speed_kmh = speed * 3.6;
+
+  // 객체가 lanelet 위에 있는지 확인
+  lanelet::BasicPoint2d search_point(pos.x, pos.y);
+  bool is_on_lanelet = false;
+  for (const auto & ll : lanelet_map_ptr_->laneletLayer) {
+    if (lanelet::geometry::inside(ll, search_point)) {
+      is_on_lanelet = true;
+      break;
+    }
+  }
+  debug_info.is_on_lanelet = is_on_lanelet;
+
+  // 가장 가까운 차선 찾기
+  auto closest_lanelet_opt = findClosestLanelet(object);
+  if (!closest_lanelet_opt) {
+    debug_info.lanelet_matched = false;
+    debug_info.matched_lanelet_id = -1;
+    debug_info.behavior_type = "NORMAL";
+    debug_info.description = is_on_lanelet ? "On lanelet but no direction match" : "Not on lanelet";
+    return info;  // 차선을 찾을 수 없으면 정상으로 판단
+  }
+
+  const auto & lanelet = closest_lanelet_opt.get();
+  debug_info.lanelet_matched = true;
+  debug_info.matched_lanelet_id = lanelet.id();
+
+  // 속도 제한 확인
+  const auto speed_limit_opt = getLaneletSpeedLimit(lanelet);
+  if (speed_limit_opt) {
+    debug_info.speed_limit_ms = speed_limit_opt.get();
+    debug_info.speed_limit_kmh = speed_limit_opt.get() * 3.6;
+  } else {
+    debug_info.speed_limit_ms = 0.0;
+    debug_info.speed_limit_kmh = 0.0;
+  }
+
+  // 1. 역주행 검출 (우선순위 최상위)
+  if (isWrongWayDriving(object, lanelet, debug_info)) {
+    updateObjectHistory(info.object_id, AbnormalBehaviorType::WRONG_WAY);
+
+    const auto it = object_history_.find(info.object_id);
+    const int count = (it != object_history_.end()) ? it->second.consecutive_wrong_way_count : 0;
+
+    debug_info.consecutive_count = count;
+    debug_info.is_confirmed = (count >= consecutive_count_threshold_);
+
+    if (isAbnormalBehaviorConfirmed(info.object_id, AbnormalBehaviorType::WRONG_WAY)) {
+      info.type = AbnormalBehaviorType::WRONG_WAY;
+      info.confidence = 0.95;
+      info.description = "Wrong-way driving detected";
+      debug_info.behavior_type = "WRONG_WAY";
+      debug_info.confidence = 0.95;
+      debug_info.description = "Wrong-way driving detected";
+      return info;
+    }
+  }
+
+  // 2. 비정상 정차 검출
+  if (isAbnormalStop(object, lanelet)) {
+    info.type = AbnormalBehaviorType::ABNORMAL_STOP;
+    info.confidence = 0.8;
+    info.description = "Abnormal stop detected";
+    debug_info.behavior_type = "ABNORMAL_STOP";
+    debug_info.confidence = 0.8;
+    debug_info.description = "Abnormal stop detected";
+    return info;
+  }
+
+  // 3. 과속 검출
+  if (isOverSpeeding(object, lanelet)) {
+    info.type = AbnormalBehaviorType::OVER_SPEED;
+    info.confidence = 0.7;
+    info.description = "Over-speeding detected";
+    debug_info.behavior_type = "OVER_SPEED";
+    debug_info.confidence = 0.7;
+    debug_info.description = "Over-speeding detected";
+    return info;
+  }
+
+  // 4. 저속 검출
+  if (isUnderSpeeding(object, lanelet)) {
+    info.type = AbnormalBehaviorType::UNDER_SPEED;
+    info.confidence = 0.6;
+    info.description = "Under-speeding detected";
+    debug_info.behavior_type = "UNDER_SPEED";
+    debug_info.confidence = 0.6;
+    debug_info.description = "Under-speeding detected";
+    return info;
+  }
+
+  // 정상인 경우 이력 업데이트
+  updateObjectHistory(info.object_id, AbnormalBehaviorType::NORMAL);
+  debug_info.behavior_type = "NORMAL";
+  debug_info.confidence = 1.0;
+  debug_info.description = "Normal";
+  debug_info.consecutive_count = 0;
+  debug_info.is_confirmed = false;
+
+  return info;
+}
+
+bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
+  const PredictedObject & object, const lanelet::ConstLanelet & matched_lanelet,
+  ObjectDebugInfo & debug_info)
+{
+  // 객체의 heading 방향 벡터 (단위 벡터)
+  const auto object_heading = getObjectHeadingVector(object);
+
+  // 차선의 방향 벡터 (단위 벡터)
+  const auto lanelet_direction =
+    getLaneletDirectionVector(matched_lanelet, object.kinematics.initial_pose_with_covariance.pose.position);
+
+  // 내적 계산 (두 벡터가 단위 벡터이므로 바로 cos(θ))
+  const double dot_product = object_heading.dot(lanelet_direction);
+
+  // 각도 계산
+  const double angle_rad = std::acos(std::clamp(dot_product, -1.0, 1.0));
+  const double angle_deg = angle_rad * 180.0 / M_PI;
+  const double cos_threshold = std::cos(wrong_way_angle_threshold_);
+
+  // Debug info에 정보 채우기
+  debug_info.object_heading_vector.x = object_heading.x();
+  debug_info.object_heading_vector.y = object_heading.y();
+  debug_info.object_heading_vector.z = 0.0;
+  debug_info.lanelet_direction_vector.x = lanelet_direction.x();
+  debug_info.lanelet_direction_vector.y = lanelet_direction.y();
+  debug_info.lanelet_direction_vector.z = 0.0;
+  debug_info.dot_product = dot_product;
+  debug_info.angle_diff_deg = angle_deg;
+  debug_info.wrong_way_threshold_deg = wrong_way_angle_threshold_ * 180.0 / M_PI;
+
+  // 각도가 임계값보다 크면 역주행
+  const bool is_wrong_way = dot_product < cos_threshold;
+
+  return is_wrong_way;
+}
+
+bool AbnormalBehaviorDetectorNode::isOverSpeeding(
+  const PredictedObject & object, const lanelet::ConstLanelet & lanelet)
+{
+  const double object_speed = getObjectSpeed(object);
+  const auto speed_limit_opt = getLaneletSpeedLimit(lanelet);
+
+  if (!speed_limit_opt) {
+    return false;  // 제한 속도 정보가 없으면 판단 불가
+  }
+
+  const double speed_limit = speed_limit_opt.get();
+  return object_speed > speed_limit * speed_threshold_ratio_;
+}
+
+bool AbnormalBehaviorDetectorNode::isUnderSpeeding(
+  const PredictedObject & object, const lanelet::ConstLanelet & lanelet)
+{
+  const double object_speed = getObjectSpeed(object);
+  const auto speed_limit_opt = getLaneletSpeedLimit(lanelet);
+
+  if (!speed_limit_opt || speed_limit_opt.get() < 5.0) {
+    return false;  // 제한 속도가 너무 낮거나 정보가 없으면 판단 불가
+  }
+
+  const double speed_limit = speed_limit_opt.get();
+  const double min_acceptable_speed = speed_limit * 0.3;  // 제한 속도의 30% 미만
+
+  return object_speed > min_speed_threshold_ && object_speed < min_acceptable_speed;
+}
+
+bool AbnormalBehaviorDetectorNode::isAbnormalStop(
+  const PredictedObject & object, [[maybe_unused]] const lanelet::ConstLanelet & lanelet)
+{
+  const double object_speed = getObjectSpeed(object);
+
+  // 정차 판단
+  if (object_speed > min_speed_threshold_) {
+    return false;  // 움직이고 있으면 정차 아님
+  }
+
+  // TODO: 신호등, 정지선 근처인지 확인하여 정상 정차 여부 판단
+  // 현재는 단순히 차선 중앙에서 정차하면 이상으로 판단
+
+  return true;
+}
+
+boost::optional<lanelet::ConstLanelet> AbnormalBehaviorDetectorNode::findClosestLanelet(
+  const PredictedObject & object)
+{
+  const auto & pos = object.kinematics.initial_pose_with_covariance.pose.position;
+  lanelet::BasicPoint2d search_point(pos.x, pos.y);
+
+  // 1단계: 객체가 어느 lanelet 안에 있는지 확인 (occupancy 기반)
+  for (const auto & lanelet : lanelet_map_ptr_->laneletLayer) {
+    // Lanelet의 polygon 안에 객체가 있는지 확인
+    if (lanelet::geometry::inside(lanelet, search_point)) {
+      // 객체가 이 lanelet 위에 있음! ✅
+      return lanelet;
+    }
+  }
+
+  // 2단계: 어느 lanelet 안에도 없으면, 가까운 lanelet 중에서 각도가 맞는 것 찾기
+  // (lanelet 경계 근처에 있는 경우 대비)
+  const auto nearby_lanelets = lanelet::geometry::findNearest(
+    lanelet_map_ptr_->laneletLayer, search_point, 5);
+
+  if (nearby_lanelets.empty()) {
+    return boost::none;
+  }
+
+  // 거리 및 각도 조건 확인
+  for (const auto & [dist, lanelet] : nearby_lanelets) {
+    // 거리가 매우 가까운 경우만 (lanelet 경계 근처)
+    if (dist > 2.0) {  // 2m 이내만 허용 (더 엄격하게)
+      continue;
+    }
+
+    // 차선 방향과 객체 heading의 차이 확인
+    const auto lanelet_direction = getLaneletDirectionVector(lanelet, pos);
+    const auto object_heading = getObjectHeadingVector(object);
+
+    // 내적으로 각도 차이 계산
+    const double dot_product = object_heading.dot(lanelet_direction);
+    const double angle_diff = std::acos(std::clamp(dot_product, -1.0, 1.0));
+
+    // 역주행 가능성도 고려하여 각도 체크 (정방향 또는 역방향 모두 허용)
+    const double normalized_angle = std::min(angle_diff, M_PI - angle_diff);
+
+    if (normalized_angle < delta_yaw_threshold_for_searching_lanelet_) {
+      return lanelet;
+    }
+  }
+
+  // lanelet 위에도 없고, 가까이에도 없음 → 매칭 실패
+  return boost::none;
+}
+
+Eigen::Vector2d AbnormalBehaviorDetectorNode::getObjectHeadingVector(const PredictedObject & object)
+{
+  const auto & pose = object.kinematics.initial_pose_with_covariance.pose;
+
+  // Quaternion에서 Yaw 추출
+  const double yaw = tf2::getYaw(pose.orientation);
+
+  // 차량의 heading 방향 벡터 (정규화된 단위 벡터)
+  return Eigen::Vector2d(std::cos(yaw), std::sin(yaw));
+}
+
+Eigen::Vector2d AbnormalBehaviorDetectorNode::getLaneletDirectionVector(
+  const lanelet::ConstLanelet & lanelet, const geometry_msgs::msg::Point & position)
+{
+  const auto centerline = lanelet.centerline();
+
+  if (centerline.size() < 2) {
+    return Eigen::Vector2d(1.0, 0.0);  // 기본값
+  }
+
+  // 객체 위치에서 가장 가까운 centerline 점 찾기
+  lanelet::BasicPoint2d search_point(position.x, position.y);
+  size_t closest_idx = 0;
+  double min_dist = std::numeric_limits<double>::max();
+
+  for (size_t i = 0; i < centerline.size(); ++i) {
+    const auto & pt = centerline[i];
+    const double dist =
+      std::sqrt((pt.x() - position.x) * (pt.x() - position.x) + (pt.y() - position.y) * (pt.y() - position.y));
+    if (dist < min_dist) {
+      min_dist = dist;
+      closest_idx = i;
+    }
+  }
+
+  // 방향 벡터 계산 (다음 점 방향)
+  size_t next_idx = std::min(closest_idx + 1, centerline.size() - 1);
+  const auto & p1 = centerline[closest_idx];
+  const auto & p2 = centerline[next_idx];
+
+  Eigen::Vector2d direction(p2.x() - p1.x(), p2.y() - p1.y());
+  if (direction.norm() > 0.01) {
+    direction.normalize();
+  }
+
+  return direction;
+}
+
+double AbnormalBehaviorDetectorNode::getObjectSpeed(const PredictedObject & object)
+{
+  const auto & twist = object.kinematics.initial_twist_with_covariance.twist;
+  return std::sqrt(twist.linear.x * twist.linear.x + twist.linear.y * twist.linear.y);
+}
+
+boost::optional<double> AbnormalBehaviorDetectorNode::getLaneletSpeedLimit(
+  const lanelet::ConstLanelet & lanelet)
+{
+  // Lanelet의 속성에서 speed_limit 태그 확인
+  const auto speed_limit_attr = lanelet.attributeOr("speed_limit", "none");
+  const std::string none_str = "none";
+
+  if (speed_limit_attr != none_str) {
+    try {
+      // km/h를 m/s로 변환
+      const double speed_kmh = std::stod(speed_limit_attr);
+      return speed_kmh / 3.6;  // km/h -> m/s
+    } catch (const std::exception &) {
+      // 변환 실패 시 기본값
+    }
+  }
+
+  // 기본 제한 속도 (60 km/h = 16.67 m/s)
+  return 16.67;
+}
+
+void AbnormalBehaviorDetectorNode::updateObjectHistory(
+  const std::string & object_id, AbnormalBehaviorType behavior_type)
+{
+  auto & history = object_history_[object_id];
+  history.object_id = object_id;
+  history.last_update_time = now();
+
+  // 이력 추가
+  history.history.push_back(behavior_type);
+  if (history.history.size() > static_cast<size_t>(history_buffer_size_)) {
+    history.history.erase(history.history.begin());
+  }
+
+  // 연속 역주행 카운트 업데이트
+  if (behavior_type == AbnormalBehaviorType::WRONG_WAY) {
+    history.consecutive_wrong_way_count++;
+  } else {
+    history.consecutive_wrong_way_count = 0;
+  }
+}
+
+void AbnormalBehaviorDetectorNode::cleanupOldHistory(const rclcpp::Time & current_time)
+{
+  for (auto it = object_history_.begin(); it != object_history_.end();) {
+    const double elapsed = (current_time - it->second.last_update_time).seconds();
+    if (elapsed > history_timeout_) {
+      it = object_history_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+bool AbnormalBehaviorDetectorNode::isAbnormalBehaviorConfirmed(
+  const std::string & object_id, AbnormalBehaviorType type)
+{
+  const auto it = object_history_.find(object_id);
+  if (it == object_history_.end()) {
+    return false;
+  }
+
+  if (type == AbnormalBehaviorType::WRONG_WAY) {
+    return it->second.consecutive_wrong_way_count >= consecutive_count_threshold_;
+  }
+
+  return false;
+}
+
+std::string AbnormalBehaviorDetectorNode::uuidToString(
+  const unique_identifier_msgs::msg::UUID & uuid)
+{
+  std::stringstream ss;
+  for (size_t i = 0; i < uuid.uuid.size(); ++i) {
+    ss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(uuid.uuid[i]);
+    if (i == 3 || i == 5 || i == 7 || i == 9) ss << "-";
+  }
+  return ss.str();
+}
+
+std::string AbnormalBehaviorDetectorNode::getStableObjectId(const PredictedObject & object)
+{
+  const auto & pos = object.kinematics.initial_pose_with_covariance.pose.position;
+
+  // 위치를 grid_size 단위로 양자화하여 stable ID 생성
+  // 예: grid_size=3.0m → (11615.82, 90913.39) → (3871, 30304)
+  const int grid_x = static_cast<int>(std::round(pos.x / position_based_id_grid_size_));
+  const int grid_y = static_cast<int>(std::round(pos.y / position_based_id_grid_size_));
+
+  // "grid_X_Y" 형식으로 ID 생성
+  std::stringstream ss;
+  ss << "grid_" << grid_x << "_" << grid_y;
+
+  return ss.str();
+}
+
+visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMarkers(
+  const std::vector<std::pair<PredictedObject, AbnormalBehaviorInfo>> & abnormal_objects)
+{
+  visualization_msgs::msg::MarkerArray marker_array;
+  int marker_id = 0;
+
+  for (const auto & [object, info] : abnormal_objects) {
+    // 텍스트 마커
+    visualization_msgs::msg::Marker text_marker;
+    text_marker.header.frame_id = "map";
+    text_marker.header.stamp = now();
+    text_marker.ns = "abnormal_behavior_text";
+    text_marker.id = marker_id++;
+    text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    text_marker.action = visualization_msgs::msg::Marker::ADD;
+
+    text_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
+    text_marker.pose.position.z += 3.0;  // 객체 위 3m
+
+    text_marker.scale.z = 1.0;
+    text_marker.color.r = 1.0;
+    text_marker.color.g = 0.0;
+    text_marker.color.b = 0.0;
+    text_marker.color.a = 1.0;
+
+    text_marker.text = info.description;
+    text_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+    marker_array.markers.push_back(text_marker);
+
+    // 경고 원 마커
+    visualization_msgs::msg::Marker circle_marker;
+    circle_marker.header = text_marker.header;
+    circle_marker.ns = "abnormal_behavior_circle";
+    circle_marker.id = marker_id++;
+    circle_marker.type = visualization_msgs::msg::Marker::CYLINDER;
+    circle_marker.action = visualization_msgs::msg::Marker::ADD;
+
+    circle_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
+    circle_marker.pose.position.z = 0.1;
+
+    circle_marker.scale.x = 5.0;
+    circle_marker.scale.y = 5.0;
+    circle_marker.scale.z = 0.2;
+
+    circle_marker.color.r = 1.0;
+    circle_marker.color.g = 0.0;
+    circle_marker.color.b = 0.0;
+    circle_marker.color.a = 0.3;
+
+    circle_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+    marker_array.markers.push_back(circle_marker);
+  }
+
+  return marker_array;
+}
+
+}  // namespace abnormal_behavior_detector
+
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(abnormal_behavior_detector::AbnormalBehaviorDetectorNode)

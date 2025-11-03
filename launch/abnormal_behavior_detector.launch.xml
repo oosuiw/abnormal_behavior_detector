@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="input_objects" default="/perception/object_recognition/objects" description="PredictedObjects 입력 토픽"/>
+  <arg name="input_vector_map" default="/map/vector_map" description="Lanelet2 맵 입력 토픽"/>
+  <arg name="output_abnormal_objects" default="/abnormal_behavior/objects" description="이상 거동 객체 출력 토픽"/>
+  <arg name="param_file" default="$(find-pkg-share abnormal_behavior_detector)/config/abnormal_behavior_detector.param.yaml"/>
+
+  <node pkg="abnormal_behavior_detector" exec="abnormal_behavior_detector_exe" name="abnormal_behavior_detector" output="screen">
+    <!-- Remapping -->
+    <remap from="~/input/objects" to="$(var input_objects)"/>
+    <remap from="~/input/vector_map" to="$(var input_vector_map)"/>
+    <remap from="~/output/abnormal_objects" to="$(var output_abnormal_objects)"/>
+
+    <!-- Parameters -->
+    <param from="$(var param_file)"/>
+  </node>
+</launch>

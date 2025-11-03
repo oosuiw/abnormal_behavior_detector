@@ -1,0 +1,21 @@
+/**:
+  ros__parameters:
+    # 차선 매칭 파라미터
+    dist_threshold_for_searching_lanelet: 15.0  # 차선 검색 최대 거리 (m) - 원형 교차로용으로 증가
+    delta_yaw_threshold_for_searching_lanelet: 0.785  # 차선 검색 각도 임계값 (라디안, 45도)
+
+    # 역주행 판단 파라미터
+    wrong_way_angle_threshold: 2.356  # 역주행 판단 각도 (라디안, 135도)
+    consecutive_count_threshold: 3  # 역주행 확정을 위한 연속 프레임 수
+
+    # 속도 관련 파라미터
+    speed_threshold_ratio: 1.2  # 과속 판단 비율 (제한속도의 120%)
+    min_speed_threshold: 0.5  # 정차 판단 속도 임계값 (m/s)
+
+    # 이력 관리 파라미터
+    history_buffer_size: 10  # 이력 버퍼 크기
+    history_timeout: 3.0  # 이력 타임아웃 (초)
+
+    # 위치 기반 추적 파라미터
+    use_position_based_tracking: true  # 위치 기반 추적 활성화 (UUID 대신 위치로 객체 추적)
+    position_based_id_grid_size: 3.0  # 위치 그리드 크기 (m) - 이 크기 내에서는 같은 객체로 간주
