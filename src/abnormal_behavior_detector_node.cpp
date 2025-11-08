@@ -47,6 +47,9 @@ AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOpt
   history_timeout_ = declare_parameter<double>("history_timeout", 3.0);  // seconds
   position_based_id_grid_size_ = declare_parameter<double>("position_based_id_grid_size", 3.0);  // m
   use_position_based_tracking_ = declare_parameter<bool>("use_position_based_tracking", true);
+  // KMS_251107: 하드코딩 제거 - 새로운 파라미터 추가
+  nearby_lanelet_threshold_ = declare_parameter<double>("nearby_lanelet_threshold", 5.0);  // m
+  num_nearby_lanelets_ = declare_parameter<int>("num_nearby_lanelets", 10);  // 개수
 
   // Transform listener
   transform_listener_ = std::make_shared<tier4_autoware_utils::TransformListener>(this);
@@ -119,8 +122,10 @@ void AbnormalBehaviorDetectorNode::onObjects(const PredictedObjects::ConstShared
 
     auto behavior_info = detectAbnormalBehavior(object, debug_info);
 
-    // Debug info 발행
-    pub_debug_info_->publish(debug_info);
+    // KMS_251107: Debug info는 이상 거동 객체만 발행 (대역폭 최적화)
+    if (behavior_info.type != AbnormalBehaviorType::NORMAL) {
+      pub_debug_info_->publish(debug_info);
+    }
 
     if (behavior_info.type != AbnormalBehaviorType::NORMAL) {
       abnormal_objects.push_back({object, behavior_info});
@@ -406,46 +411,51 @@ bool AbnormalBehaviorDetectorNode::isAbnormalStop(
   return true;
 }
 
+// KMS_251107: Lanelet 매칭 알고리즘 개선
+// - 하드코딩된 2m 임계값 제거 → 파라미터 사용
+// - 검색 lanelet 개수 5개 → 파라미터로 변경 (원형 교차로 대응)
+// - 1단계 occupancy 체크도 최적화 (nearby만 체크)
 boost::optional<lanelet::ConstLanelet> AbnormalBehaviorDetectorNode::findClosestLanelet(
   const PredictedObject & object)
 {
   const auto & pos = object.kinematics.initial_pose_with_covariance.pose.position;
   lanelet::BasicPoint2d search_point(pos.x, pos.y);
 
-  // 1단계: 객체가 어느 lanelet 안에 있는지 확인 (occupancy 기반)
-  for (const auto & lanelet : lanelet_map_ptr_->laneletLayer) {
-    // Lanelet의 polygon 안에 객체가 있는지 확인
-    if (lanelet::geometry::inside(lanelet, search_point)) {
-      // 객체가 이 lanelet 위에 있음! ✅
-      return lanelet;
-    }
-  }
-
-  // 2단계: 어느 lanelet 안에도 없으면, 가까운 lanelet 중에서 각도가 맞는 것 찾기
-  // (lanelet 경계 근처에 있는 경우 대비)
+  // KMS_251107: 1단계 - 먼저 가까운 lanelet들만 가져오기 (성능 최적화)
+  // 전체 맵을 순회하는 대신 가까운 것들만 검색
   const auto nearby_lanelets = lanelet::geometry::findNearest(
-    lanelet_map_ptr_->laneletLayer, search_point, 5);
+    lanelet_map_ptr_->laneletLayer, search_point, num_nearby_lanelets_);
 
   if (nearby_lanelets.empty()) {
     return boost::none;
   }
 
-  // 거리 및 각도 조건 확인
+  // KMS_251107: 2단계 - 가까운 lanelet 중에서 occupancy(내부 포함) 체크
   for (const auto & [dist, lanelet] : nearby_lanelets) {
-    // 거리가 매우 가까운 경우만 (lanelet 경계 근처)
-    if (dist > 2.0) {  // 2m 이내만 허용 (더 엄격하게)
+    if (lanelet::geometry::inside(lanelet, search_point)) {
+      // KMS_251107: 객체가 이 lanelet 내부에 있음 → 바로 반환
+      return lanelet;
+    }
+  }
+
+  // KMS_251107: 3단계 - Lanelet 내부가 아니면, 경계 근처에서 각도 매칭 시도
+  // (차선 경계에 걸쳐 있는 경우 대비)
+  for (const auto & [dist, lanelet] : nearby_lanelets) {
+    // KMS_251107: 거리 체크 - 파라미터 사용 (하드코딩 제거)
+    if (dist > nearby_lanelet_threshold_) {
       continue;
     }
 
-    // 차선 방향과 객체 heading의 차이 확인
+    // KMS_251107: 차선 방향과 객체 heading의 차이 확인
     const auto lanelet_direction = getLaneletDirectionVector(lanelet, pos);
     const auto object_heading = getObjectHeadingVector(object);
 
-    // 내적으로 각도 차이 계산
+    // KMS_251107: 내적으로 각도 차이 계산
     const double dot_product = object_heading.dot(lanelet_direction);
     const double angle_diff = std::acos(std::clamp(dot_product, -1.0, 1.0));
 
-    // 역주행 가능성도 고려하여 각도 체크 (정방향 또는 역방향 모두 허용)
+    // KMS_251107: 각도 정규화 - 정방향(0도 ± 45도) 또는 역방향(180도 ± 45도) 모두 허용
+    // 이는 역주행 차량도 올바른 lanelet과 매칭되도록 함
     const double normalized_angle = std::min(angle_diff, M_PI - angle_diff);
 
     if (normalized_angle < delta_yaw_threshold_for_searching_lanelet_) {
@@ -453,7 +463,7 @@ boost::optional<lanelet::ConstLanelet> AbnormalBehaviorDetectorNode::findClosest
     }
   }
 
-  // lanelet 위에도 없고, 가까이에도 없음 → 매칭 실패
+  // KMS_251107: 매칭 실패 - lanelet 위에도 없고, 경계 근처에서도 각도가 맞지 않음
   return boost::none;
 }
 
@@ -468,38 +478,70 @@ Eigen::Vector2d AbnormalBehaviorDetectorNode::getObjectHeadingVector(const Predi
   return Eigen::Vector2d(std::cos(yaw), std::sin(yaw));
 }
 
+// KMS_251107: 곡선 도로(원형 교차로) 대응 개선
+// - 끝점 처리 안전성 강화
+// - 중간 점에서 양방향 평균으로 더 부드러운 방향 계산
 Eigen::Vector2d AbnormalBehaviorDetectorNode::getLaneletDirectionVector(
   const lanelet::ConstLanelet & lanelet, const geometry_msgs::msg::Point & position)
 {
   const auto centerline = lanelet.centerline();
 
   if (centerline.size() < 2) {
-    return Eigen::Vector2d(1.0, 0.0);  // 기본값
+    return Eigen::Vector2d(1.0, 0.0);  // KMS_251107: 기본값 (동쪽 방향)
   }
 
-  // 객체 위치에서 가장 가까운 centerline 점 찾기
-  lanelet::BasicPoint2d search_point(position.x, position.y);
+  // KMS_251107: 객체 위치에서 가장 가까운 centerline 점 찾기
   size_t closest_idx = 0;
   double min_dist = std::numeric_limits<double>::max();
 
   for (size_t i = 0; i < centerline.size(); ++i) {
     const auto & pt = centerline[i];
     const double dist =
-      std::sqrt((pt.x() - position.x) * (pt.x() - position.x) + (pt.y() - position.y) * (pt.y() - position.y));
+      std::sqrt((pt.x() - position.x) * (pt.x() - position.x) +
+                (pt.y() - position.y) * (pt.y() - position.y));
     if (dist < min_dist) {
       min_dist = dist;
       closest_idx = i;
     }
   }
 
-  // 방향 벡터 계산 (다음 점 방향)
-  size_t next_idx = std::min(closest_idx + 1, centerline.size() - 1);
-  const auto & p1 = centerline[closest_idx];
-  const auto & p2 = centerline[next_idx];
+  // KMS_251107: 방향 벡터 계산 (양방향 고려로 끝점 안전 처리)
+  Eigen::Vector2d direction;
 
-  Eigen::Vector2d direction(p2.x() - p1.x(), p2.y() - p1.y());
+  if (closest_idx == 0) {
+    // KMS_251107: 첫 점 - 다음 점 방향 사용
+    const auto & p1 = centerline[0];
+    const auto & p2 = centerline[1];
+    direction = Eigen::Vector2d(p2.x() - p1.x(), p2.y() - p1.y());
+
+  } else if (closest_idx == centerline.size() - 1) {
+    // KMS_251107: 끝 점 - 이전 점에서 현재 점으로의 방향 사용
+    const auto & p1 = centerline[centerline.size() - 2];
+    const auto & p2 = centerline[centerline.size() - 1];
+    direction = Eigen::Vector2d(p2.x() - p1.x(), p2.y() - p1.y());
+
+  } else {
+    // KMS_251107: 중간 점 - 이전-다음 점 사이의 평균 방향 (곡선에서 더 부드러움)
+    const auto & p_prev = centerline[closest_idx - 1];
+    const auto & p_curr = centerline[closest_idx];
+    const auto & p_next = centerline[closest_idx + 1];
+
+    // KMS_251107: 두 세그먼트의 평균 방향으로 곡선의 접선 방향 근사
+    Eigen::Vector2d dir1(p_curr.x() - p_prev.x(), p_curr.y() - p_prev.y());
+    Eigen::Vector2d dir2(p_next.x() - p_curr.x(), p_next.y() - p_curr.y());
+
+    direction = (dir1 + dir2) / 2.0;
+  }
+
+  // KMS_251107: 정규화 (단위 벡터로 만들기)
   if (direction.norm() > 0.01) {
     direction.normalize();
+  } else {
+    // KMS_251107: 비상 대책 - 방향 벡터가 너무 작으면 기본값 반환
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Lanelet direction vector too small (norm < 0.01), using fallback direction");
+    return Eigen::Vector2d(1.0, 0.0);
   }
 
   return direction;

@@ -125,6 +125,9 @@ private:
   double history_timeout_;            // 이력 타임아웃 (초)
   double position_based_id_grid_size_;  // 위치 기반 ID 그리드 크기 (m)
   bool use_position_based_tracking_;    // 위치 기반 추적 사용 여부
+  // KMS_251107: 새로 추가된 파라미터 (하드코딩 제거)
+  double nearby_lanelet_threshold_;     // Lanelet 경계 근처 매칭 거리 임계값 (m)
+  int num_nearby_lanelets_;             // 검색할 인근 Lanelet 개수
 
   // Callbacks
   void onObjects(const PredictedObjects::ConstSharedPtr msg);
