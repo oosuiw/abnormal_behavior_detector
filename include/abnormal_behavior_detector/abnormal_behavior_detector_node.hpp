@@ -129,6 +129,11 @@ private:
   double nearby_lanelet_threshold_;     // Lanelet 경계 근처 매칭 거리 임계값 (m)
   int num_nearby_lanelets_;             // 검색할 인근 Lanelet 개수
 
+  // Behavior detection flags
+  bool detect_over_speed_;
+  bool detect_under_speed_;
+  bool detect_abnormal_stop_;
+
   // Callbacks
   void onObjects(const PredictedObjects::ConstSharedPtr msg);
   void onMap(const HADMapBin::ConstSharedPtr msg);

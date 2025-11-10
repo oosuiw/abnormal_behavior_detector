@@ -8,7 +8,7 @@
     # - 객체에서 이 거리 이내의 lanelet만 검색 대상
     # - 원형 교차로: 15.0m 권장 (넓은 범위)
     # - 일반 도로: 5-10m 권장
-    dist_threshold_for_searching_lanelet: 15.0
+    dist_threshold_for_searching_lanelet: 10.0
 
     # 차선 검색 각도 임계값 (라디안)
     # - 객체 heading과 lanelet 방향 차이 허용값
@@ -20,13 +20,20 @@
     # - Lanelet 내부가 아닌 경계 근처에서 매칭을 시도할 때의 거리
     # - 기존 하드코딩 2.0m → 파라미터화
     # - 원형 교차로: 5.0m 권장 (차선 폭이 넓을 수 있음)
-    nearby_lanelet_threshold: 5.0
+    nearby_lanelet_threshold: 3.0
 
     # KMS_251107: 검색할 인근 Lanelet 개수
     # - 기존 하드코딩 5개 → 파라미터화
     # - 원형 교차로: 10개 권장 (여러 차선이 밀집)
     # - 일반 도로: 5개로도 충분
-    num_nearby_lanelets: 10
+    num_nearby_lanelets: 5
+
+    # ============================================
+    # 이상 행동 탐지 활성화 플래그
+    # ============================================
+    detect_over_speed: false      # 과속 탐지 활성화
+    detect_under_speed: false     # 저속 탐지 활성화
+    detect_abnormal_stop: false   # 비정상 정지 탐지 활성화
 
     # ============================================
     # KMS_251107: 역주행 판단 파라미터 (곡선 도로 최적화)
@@ -38,14 +45,14 @@
     # - 기존 2.356 rad (135도)에서 낮춤 → 더 민감한 검출
     # - 직선 도로: 2.356 (135도) 권장
     # - 곡선 도로/원형 교차로: 2.094 (120도) 권장
-    wrong_way_angle_threshold: 2.094
+    wrong_way_angle_threshold: 2.356
 
     # 역주행 확정을 위한 연속 프레임 수
     # - 오검출 방지를 위해 N프레임 연속 검출 필요
     # - 2: 빠른 반응 (원형 교차로 권장)
     # - 3: 안정적 (일반 도로)
     # - Perception 주기 10Hz 기준: 2프레임 = 0.2초
-    consecutive_count_threshold: 2
+    consecutive_count_threshold: 3
 
     # ============================================
     # 속도 관련 파라미터
@@ -91,4 +98,4 @@
     # - 3.0: 보통 (일반 도로)
     # - 5.0: 권장 (원형 교차로, 빠른 차량)
     # - 10.0: 너무 큼 (다른 객체 혼동 위험)
-    position_based_id_grid_size: 5.0
+    position_based_id_grid_size: 3.0

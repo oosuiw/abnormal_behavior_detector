@@ -51,6 +51,11 @@ AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOpt
   nearby_lanelet_threshold_ = declare_parameter<double>("nearby_lanelet_threshold", 5.0);  // m
   num_nearby_lanelets_ = declare_parameter<int>("num_nearby_lanelets", 10);  // 개수
 
+  // Behavior detection flags
+  detect_over_speed_ = declare_parameter<bool>("detect_over_speed", false);
+  detect_under_speed_ = declare_parameter<bool>("detect_under_speed", false);
+  detect_abnormal_stop_ = declare_parameter<bool>("detect_abnormal_stop", false);
+
   // Transform listener
   transform_listener_ = std::make_shared<tier4_autoware_utils::TransformListener>(this);
 
@@ -123,9 +128,9 @@ void AbnormalBehaviorDetectorNode::onObjects(const PredictedObjects::ConstShared
     auto behavior_info = detectAbnormalBehavior(object, debug_info);
 
     // KMS_251107: Debug info는 이상 거동 객체만 발행 (대역폭 최적화)
-    if (behavior_info.type != AbnormalBehaviorType::NORMAL) {
-      pub_debug_info_->publish(debug_info);
-    }
+    // if (behavior_info.type != AbnormalBehaviorType::NORMAL) {
+    pub_debug_info_->publish(debug_info);
+    // }
 
     if (behavior_info.type != AbnormalBehaviorType::NORMAL) {
       abnormal_objects.push_back({object, behavior_info});
@@ -283,10 +288,15 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
       debug_info.description = "Wrong-way driving detected";
       return info;
     }
+
+    // 역주행이 감지되었지만 아직 확정되지 않은 경우, 카운터가 리셋되지 않도록 여기서 반환
+    debug_info.behavior_type = "POTENTIAL_WRONG_WAY";
+    debug_info.description = "Potential wrong-way, accumulating count.";
+    return info;
   }
 
   // 2. 비정상 정차 검출
-  if (isAbnormalStop(object, lanelet)) {
+  if (detect_abnormal_stop_ && isAbnormalStop(object, lanelet)) {
     info.type = AbnormalBehaviorType::ABNORMAL_STOP;
     info.confidence = 0.8;
     info.description = "Abnormal stop detected";
@@ -297,7 +307,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   }
 
   // 3. 과속 검출
-  if (isOverSpeeding(object, lanelet)) {
+  if (detect_over_speed_ && isOverSpeeding(object, lanelet)) {
     info.type = AbnormalBehaviorType::OVER_SPEED;
     info.confidence = 0.7;
     info.description = "Over-speeding detected";
@@ -308,7 +318,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   }
 
   // 4. 저속 검출
-  if (isUnderSpeeding(object, lanelet)) {
+  if (detect_under_speed_ && isUnderSpeeding(object, lanelet)) {
     info.type = AbnormalBehaviorType::UNDER_SPEED;
     info.confidence = 0.6;
     info.description = "Under-speeding detected";
