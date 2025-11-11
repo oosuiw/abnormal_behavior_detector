@@ -41,6 +41,7 @@ AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOpt
   wrong_way_angle_threshold_ =
     declare_parameter<double>("wrong_way_angle_threshold", 2.356);  // 135도 (3π/4)
   consecutive_count_threshold_ = declare_parameter<int>("consecutive_count_threshold", 3);
+  min_speed_for_wrong_way_ = declare_parameter<double>("min_speed_for_wrong_way", 2.0);  // m/s
   speed_threshold_ratio_ = declare_parameter<double>("speed_threshold_ratio", 1.2);
   min_speed_threshold_ = declare_parameter<double>("min_speed_threshold", 0.5);  // m/s
   history_buffer_size_ = declare_parameter<int>("history_buffer_size", 10);
@@ -343,6 +344,12 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
   const PredictedObject & object, const lanelet::ConstLanelet & matched_lanelet,
   ObjectDebugInfo & debug_info)
 {
+  // 속도 체크 - 저속 객체(보행자 등)는 역주행 검출에서 제외
+  const double object_speed = getObjectSpeed(object);
+  if (object_speed < min_speed_for_wrong_way_) {
+    return false;  // 너무 느리면 역주행 검출 제외 (보행자 오검출 방지)
+  }
+
   // 객체의 heading 방향 벡터 (단위 벡터)
   const auto object_heading = getObjectHeadingVector(object);
 

@@ -119,6 +119,7 @@ private:
   double delta_yaw_threshold_for_searching_lanelet_;  // 차선 검색 각도 임계값
   double wrong_way_angle_threshold_;  // 역주행 판단 각도 임계값 (라디안)
   int consecutive_count_threshold_;   // 이상 거동 확정을 위한 연속 프레임 수
+  double min_speed_for_wrong_way_;    // 역주행 검출 최소 속도 임계값 (m/s)
   double speed_threshold_ratio_;      // 과속/저속 판단 비율
   double min_speed_threshold_;        // 정차 판단 속도 임계값
   int history_buffer_size_;           // 이력 버퍼 크기
