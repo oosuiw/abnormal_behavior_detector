@@ -247,7 +247,9 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
 
   // 가장 가까운 차선 찾기
   auto closest_lanelet_opt = findClosestLanelet(object);
-  if (!closest_lanelet_opt) {
+
+  // KMS_251111: 역주행 판단은 반드시 lanelet 위에 있을 때만 수행
+  if (!closest_lanelet_opt || !is_on_lanelet) {
     debug_info.lanelet_matched = false;
     debug_info.matched_lanelet_id = -1;
     debug_info.behavior_type = "NORMAL";
@@ -282,7 +284,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
     if (isAbnormalBehaviorConfirmed(info.object_id, AbnormalBehaviorType::WRONG_WAY)) {
       info.type = AbnormalBehaviorType::WRONG_WAY;
       info.confidence = 0.95;
-      info.description = "Wrong-way driving detected";
+      info.description = "Wrong-way";
       debug_info.behavior_type = "WRONG_WAY";
       debug_info.confidence = 0.95;
       debug_info.description = "Wrong-way driving detected";
@@ -293,6 +295,9 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
     debug_info.behavior_type = "POTENTIAL_WRONG_WAY";
     debug_info.description = "Potential wrong-way, accumulating count.";
     return info;
+  } else {
+    // 역주행이 아니므로 카운터를 리셋
+    updateObjectHistory(info.object_id, AbnormalBehaviorType::NORMAL);
   }
 
   // 2. 비정상 정차 검출
@@ -328,8 +333,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
     return info;
   }
 
-  // 정상인 경우 이력 업데이트
-  updateObjectHistory(info.object_id, AbnormalBehaviorType::NORMAL);
+  // 정상인 경우
   debug_info.behavior_type = "NORMAL";
   debug_info.confidence = 1.0;
   debug_info.description = "Normal";
@@ -698,7 +702,7 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
     circle_marker.action = visualization_msgs::msg::Marker::ADD;
 
     circle_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
-    circle_marker.pose.position.z = 0.1;
+    circle_marker.pose.position.z += 0.1;
 
     circle_marker.scale.x = 5.0;
     circle_marker.scale.y = 5.0;
