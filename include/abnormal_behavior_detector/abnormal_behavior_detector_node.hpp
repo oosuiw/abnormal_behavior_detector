@@ -135,6 +135,16 @@ private:
   bool detect_under_speed_;
   bool detect_abnormal_stop_;
 
+  // Per-class wrong-way detection flags
+  bool detect_wrong_way_for_car_;
+  bool detect_wrong_way_for_truck_;
+  bool detect_wrong_way_for_bus_;
+  bool detect_wrong_way_for_trailer_;
+  bool detect_wrong_way_for_motorcycle_;
+  bool detect_wrong_way_for_bicycle_;
+  bool detect_wrong_way_for_pedestrian_;
+  bool detect_wrong_way_for_unknown_;
+
   // Callbacks
   void onObjects(const PredictedObjects::ConstSharedPtr msg);
   void onMap(const HADMapBin::ConstSharedPtr msg);

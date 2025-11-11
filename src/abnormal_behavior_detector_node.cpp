@@ -57,6 +57,16 @@ AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOpt
   detect_under_speed_ = declare_parameter<bool>("detect_under_speed", false);
   detect_abnormal_stop_ = declare_parameter<bool>("detect_abnormal_stop", false);
 
+  // Per-class wrong-way detection flags
+  detect_wrong_way_for_car_ = declare_parameter<bool>("detect_wrong_way_for_car", true);
+  detect_wrong_way_for_truck_ = declare_parameter<bool>("detect_wrong_way_for_truck", true);
+  detect_wrong_way_for_bus_ = declare_parameter<bool>("detect_wrong_way_for_bus", true);
+  detect_wrong_way_for_trailer_ = declare_parameter<bool>("detect_wrong_way_for_trailer", true);
+  detect_wrong_way_for_motorcycle_ = declare_parameter<bool>("detect_wrong_way_for_motorcycle", true);
+  detect_wrong_way_for_bicycle_ = declare_parameter<bool>("detect_wrong_way_for_bicycle", false);
+  detect_wrong_way_for_pedestrian_ = declare_parameter<bool>("detect_wrong_way_for_pedestrian", false);
+  detect_wrong_way_for_unknown_ = declare_parameter<bool>("detect_wrong_way_for_unknown", false);
+
   // Transform listener
   transform_listener_ = std::make_shared<tier4_autoware_utils::TransformListener>(this);
 
@@ -348,6 +358,53 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
   const PredictedObject & object, const lanelet::ConstLanelet & matched_lanelet,
   ObjectDebugInfo & debug_info)
 {
+  // 클래스별 검출 활성화 체크
+  if (!object.classification.empty()) {
+    const uint8_t label = object.classification[0].label;
+
+    // ObjectClassification constants
+    constexpr uint8_t UNKNOWN = 0;
+    constexpr uint8_t CAR = 1;
+    constexpr uint8_t TRUCK = 2;
+    constexpr uint8_t BUS = 3;
+    constexpr uint8_t TRAILER = 4;
+    constexpr uint8_t MOTORCYCLE = 5;
+    constexpr uint8_t BICYCLE = 6;
+    constexpr uint8_t PEDESTRIAN = 7;
+
+    // 클래스별로 검출 비활성화된 경우 스킵
+    switch (label) {
+      case CAR:
+        if (!detect_wrong_way_for_car_) return false;
+        break;
+      case TRUCK:
+        if (!detect_wrong_way_for_truck_) return false;
+        break;
+      case BUS:
+        if (!detect_wrong_way_for_bus_) return false;
+        break;
+      case TRAILER:
+        if (!detect_wrong_way_for_trailer_) return false;
+        break;
+      case MOTORCYCLE:
+        if (!detect_wrong_way_for_motorcycle_) return false;
+        break;
+      case BICYCLE:
+        if (!detect_wrong_way_for_bicycle_) return false;
+        break;
+      case PEDESTRIAN:
+        if (!detect_wrong_way_for_pedestrian_) return false;
+        break;
+      case UNKNOWN:
+      default:
+        if (!detect_wrong_way_for_unknown_) return false;
+        break;
+    }
+  } else {
+    // classification이 없는 경우 unknown으로 처리
+    if (!detect_wrong_way_for_unknown_) return false;
+  }
+
   // 속도 체크 - 저속 객체(보행자 등)는 역주행 검출에서 제외
   const double object_speed = getObjectSpeed(object);
   if (object_speed < min_speed_for_wrong_way_) {

@@ -36,6 +36,22 @@
     detect_abnormal_stop: false   # 비정상 정지 탐지 활성화
 
     # ============================================
+    # 객체 클래스별 역주행 검출 활성화
+    # ============================================
+    # 각 객체 클래스별로 역주행 검출을 활성화/비활성화
+    # - true: 해당 클래스 객체에 대해 역주행 검출 수행
+    # - false: 해당 클래스 객체 무시
+
+    detect_wrong_way_for_car: true           # 승용차 (CAR = 1)
+    detect_wrong_way_for_truck: true         # 트럭 (TRUCK = 2)
+    detect_wrong_way_for_bus: true           # 버스 (BUS = 3)
+    detect_wrong_way_for_trailer: true       # 트레일러 (TRAILER = 4)
+    detect_wrong_way_for_motorcycle: true    # 오토바이 (MOTORCYCLE = 5)
+    detect_wrong_way_for_bicycle: false      # 자전거 (BICYCLE = 6)
+    detect_wrong_way_for_pedestrian: false   # 보행자 (PEDESTRIAN = 7)
+    detect_wrong_way_for_unknown: false      # 미분류 객체 (UNKNOWN = 0)
+
+    # ============================================
     # KMS_251107: 역주행 판단 파라미터 (곡선 도로 최적화)
     # ============================================
 
