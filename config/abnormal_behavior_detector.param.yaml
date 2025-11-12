@@ -47,7 +47,7 @@
     detect_wrong_way_for_bus: true           # 버스 (BUS = 3)
     detect_wrong_way_for_trailer: true       # 트레일러 (TRAILER = 4)
     detect_wrong_way_for_motorcycle: true    # 오토바이 (MOTORCYCLE = 5)
-    detect_wrong_way_for_bicycle: false      # 자전거 (BICYCLE = 6)
+    detect_wrong_way_for_bicycle: true      # 자전거 (BICYCLE = 6)
     detect_wrong_way_for_pedestrian: false   # 보행자 (PEDESTRIAN = 7)
     detect_wrong_way_for_unknown: false      # 미분류 객체 (UNKNOWN = 0)
 
