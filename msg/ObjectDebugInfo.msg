@@ -6,6 +6,7 @@ std_msgs/Header header
 # 객체 기본 정보
 string stable_object_id           # 위치 기반 stable ID (예: grid_3872_30304)
 string uuid                       # 원본 UUID (앞 8자리)
+uint8 object_class                # 객체 클래스 (CAR=1, TRUCK=2, BUS=3, MOTORCYCLE=5, BICYCLE=6, PEDESTRIAN=7)
 geometry_msgs/Point position      # 객체 위치
 float64 yaw_rad                   # Yaw (라디안)
 float64 yaw_deg                   # Yaw (도)
