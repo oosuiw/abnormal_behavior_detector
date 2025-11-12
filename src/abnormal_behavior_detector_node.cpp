@@ -236,6 +236,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   // Debug info 기본 정보
   debug_info.stable_object_id = info.object_id;
   debug_info.uuid = uuidToString(object.object_id).substr(0, 8);
+  debug_info.object_class = object.classification.empty() ? 0 : object.classification[0].label;
   debug_info.position = pos;
   debug_info.yaw_rad = yaw;
   debug_info.yaw_deg = yaw * 180.0 / M_PI;
