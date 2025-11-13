@@ -48,7 +48,7 @@
     detect_wrong_way_for_trailer: true       # 트레일러 (TRAILER = 4)
     detect_wrong_way_for_motorcycle: true    # 오토바이 (MOTORCYCLE = 5)
     detect_wrong_way_for_bicycle: true      # 자전거 (BICYCLE = 6)
-    detect_wrong_way_for_pedestrian: false   # 보행자 (PEDESTRIAN = 7)
+    detect_wrong_way_for_pedestrian: true   # 보행자 (PEDESTRIAN = 7)
     detect_wrong_way_for_unknown: false      # 미분류 객체 (UNKNOWN = 0)
 
     # ============================================
@@ -75,7 +75,7 @@
     # - 저속 보행자의 불안정한 heading으로 인한 오검출 방지
     # - 2.0 m/s = 7.2 km/h (보행자 평균 속도보다 높음)
     # - 1.0 m/s = 3.6 km/h (보행자 제외, 느린 차량 포함)
-    min_speed_for_wrong_way: 2.0
+    min_speed_for_wrong_way: 1.0
 
     # ============================================
     # 속도 관련 파라미터

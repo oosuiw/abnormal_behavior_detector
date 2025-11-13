@@ -81,6 +81,8 @@ struct ObjectAbnormalHistory
   std::vector<AbnormalBehaviorType> history;  // 최근 N프레임의 이상 거동 이력
   rclcpp::Time last_update_time;
   int consecutive_wrong_way_count;  // 연속 역주행 카운트
+  // KMS_251113: Heading 안정화를 위한 이력 (보행자 오검출 방지)
+  std::vector<double> heading_history;  // 최근 N프레임의 yaw 각도 (라디안)
 };
 
 /**
@@ -154,7 +156,8 @@ private:
    * @brief 객체의 이상 거동 검출
    */
   AbnormalBehaviorInfo detectAbnormalBehavior(
-    const PredictedObject & object, ObjectDebugInfo & debug_info);
+    const PredictedObject & object, ObjectDebugInfo & debug_info,
+    const rclcpp::Time & current_time);
 
   /**
    * @brief 역주행 검출
@@ -208,7 +211,9 @@ private:
   /**
    * @brief 객체 이력 업데이트
    */
-  void updateObjectHistory(const std::string & object_id, AbnormalBehaviorType behavior_type);
+  void updateObjectHistory(
+    const std::string & object_id, AbnormalBehaviorType behavior_type,
+    const rclcpp::Time & current_time);
 
   /**
    * @brief 오래된 이력 삭제
@@ -230,9 +235,18 @@ private:
    */
   std::string getStableObjectId(const PredictedObject & object);
 
+  /**
+   * @brief KMS_251113: Heading 안정화 (이동 평균 필터)
+   * @param object_id 객체 ID
+   * @param current_yaw 현재 프레임의 yaw 각도 (라디안)
+   * @return 안정화된 yaw 각도 (라디안)
+   */
+  double getSmoothedHeading(const std::string & object_id, double current_yaw);
+
   // Visualization
   visualization_msgs::msg::MarkerArray createDebugMarkers(
-    const std::vector<std::pair<PredictedObject, AbnormalBehaviorInfo>> & abnormal_objects);
+    const std::vector<std::pair<PredictedObject, AbnormalBehaviorInfo>> & abnormal_objects,
+    const rclcpp::Time & current_time);
 };
 
 }  // namespace abnormal_behavior_detector

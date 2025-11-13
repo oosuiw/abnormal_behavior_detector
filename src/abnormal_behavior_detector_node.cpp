@@ -131,12 +131,15 @@ void AbnormalBehaviorDetectorNode::onObjects(const PredictedObjects::ConstShared
   int under_speed_count = 0;
   int abnormal_stop_count = 0;
 
+  // KMS_251113: Time source 통일 - 한 번만 생성하고 재사용
+  const rclcpp::Time current_time(msg->header.stamp, RCL_ROS_TIME);
+
   // 각 객체에 대해 이상 거동 검출
   for (const auto & object : msg->objects) {
     ObjectDebugInfo debug_info;
     debug_info.header = msg->header;
 
-    auto behavior_info = detectAbnormalBehavior(object, debug_info);
+    auto behavior_info = detectAbnormalBehavior(object, debug_info, current_time);
 
     // KMS_251107: Debug info는 이상 거동 객체만 발행 (대역폭 최적화)
     // if (behavior_info.type != AbnormalBehaviorType::NORMAL) {
@@ -181,7 +184,7 @@ void AbnormalBehaviorDetectorNode::onObjects(const PredictedObjects::ConstShared
     pub_abnormal_objects_->publish(abnormal_msg);
 
     // 디버그 마커 발행
-    auto markers = createDebugMarkers(abnormal_objects);
+    auto markers = createDebugMarkers(abnormal_objects, current_time);
     pub_debug_markers_->publish(markers);
   }
 
@@ -211,11 +214,12 @@ void AbnormalBehaviorDetectorNode::onObjects(const PredictedObjects::ConstShared
   pub_processing_time_->publish(processing_time_msg);
 
   // 오래된 이력 삭제
-  cleanupOldHistory(msg->header.stamp);
+  cleanupOldHistory(current_time);
 }
 
 AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
-  const PredictedObject & object, ObjectDebugInfo & debug_info)
+  const PredictedObject & object, ObjectDebugInfo & debug_info,
+  const rclcpp::Time & current_time)
 {
   AbnormalBehaviorInfo info;
 
@@ -231,14 +235,18 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   info.description = "Normal";
 
   const auto & pos = object.kinematics.initial_pose_with_covariance.pose.position;
-  const double yaw = tf2::getYaw(object.kinematics.initial_pose_with_covariance.pose.orientation);
+  const double raw_yaw = tf2::getYaw(object.kinematics.initial_pose_with_covariance.pose.orientation);
+
+  // KMS_251113: Heading 안정화 (보행자 yaw 튐 현상 방지)
+  // 최근 5프레임의 yaw를 원형 평균하여 안정화
+  const double yaw = getSmoothedHeading(info.object_id, raw_yaw);
 
   // Debug info 기본 정보
   debug_info.stable_object_id = info.object_id;
   debug_info.uuid = uuidToString(object.object_id).substr(0, 8);
   debug_info.object_class = object.classification.empty() ? 0 : object.classification[0].label;
   debug_info.position = pos;
-  debug_info.yaw_rad = yaw;
+  debug_info.yaw_rad = yaw;  // 안정화된 yaw 사용
   debug_info.yaw_deg = yaw * 180.0 / M_PI;
 
   // 속도 정보
@@ -246,19 +254,29 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   debug_info.speed_ms = speed;
   debug_info.speed_kmh = speed * 3.6;
 
-  // 객체가 lanelet 위에 있는지 확인
+  // KMS_251113: 성능 최적화 - 전체 맵 순회 제거
+  // 기존: 전체 lanelet_map을 순회 (O(N))
+  // 개선: findClosestLanelet()에서 nearby만 검색하고, 그 결과로 is_on_lanelet 판단
   lanelet::BasicPoint2d search_point(pos.x, pos.y);
-  bool is_on_lanelet = false;
-  for (const auto & ll : lanelet_map_ptr_->laneletLayer) {
-    if (lanelet::geometry::inside(ll, search_point)) {
-      is_on_lanelet = true;
-      break;
-    }
-  }
-  debug_info.is_on_lanelet = is_on_lanelet;
 
   // 가장 가까운 차선 찾기
   auto closest_lanelet_opt = findClosestLanelet(object);
+
+  // KMS_251113: is_on_lanelet 체크 - nearby lanelet만 확인 (성능 향상)
+  bool is_on_lanelet = false;
+  if (closest_lanelet_opt) {
+    // findClosestLanelet()의 nearby 결과 재사용
+    const auto nearby_lanelets = lanelet::geometry::findNearest(
+      lanelet_map_ptr_->laneletLayer, search_point, num_nearby_lanelets_);
+
+    for (const auto & [dist, ll] : nearby_lanelets) {
+      if (lanelet::geometry::inside(ll, search_point)) {
+        is_on_lanelet = true;
+        break;
+      }
+    }
+  }
+  debug_info.is_on_lanelet = is_on_lanelet;
 
   // KMS_251111: 역주행 판단은 반드시 lanelet 위에 있을 때만 수행
   if (!closest_lanelet_opt || !is_on_lanelet) {
@@ -285,7 +303,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
 
   // 1. 역주행 검출 (우선순위 최상위)
   if (isWrongWayDriving(object, lanelet, debug_info)) {
-    updateObjectHistory(info.object_id, AbnormalBehaviorType::WRONG_WAY);
+    updateObjectHistory(info.object_id, AbnormalBehaviorType::WRONG_WAY, current_time);
 
     const auto it = object_history_.find(info.object_id);
     const int count = (it != object_history_.end()) ? it->second.consecutive_wrong_way_count : 0;
@@ -309,7 +327,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
     return info;
   } else {
     // 역주행이 아니므로 카운터를 리셋
-    updateObjectHistory(info.object_id, AbnormalBehaviorType::NORMAL);
+    updateObjectHistory(info.object_id, AbnormalBehaviorType::NORMAL, current_time);
   }
 
   // 2. 비정상 정차 검출
@@ -412,8 +430,36 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
     return false;  // 너무 느리면 역주행 검출 제외 (보행자 오검출 방지)
   }
 
-  // 객체의 heading 방향 벡터 (단위 벡터)
-  const auto object_heading = getObjectHeadingVector(object);
+  // KMS_251113: 보행자는 velocity 기반 방향 판단 (heading이 부정확함)
+  constexpr uint8_t PEDESTRIAN = 7;
+  Eigen::Vector2d object_heading;
+
+  if (!object.classification.empty() && object.classification[0].label == PEDESTRIAN) {
+    // 보행자: velocity 방향 사용 (heading보다 정확)
+    const auto & twist = object.kinematics.initial_twist_with_covariance.twist;
+    const double vx_local = twist.linear.x;
+    const double vy_local = twist.linear.y;
+
+    if (std::abs(vx_local) < 0.1 && std::abs(vy_local) < 0.1) {
+      // 속도가 거의 없으면 방향 판단 불가
+      return false;
+    }
+
+    // KMS_251113: Velocity를 월드 좌표계로 변환
+    // twist.linear는 로컬 좌표계 (객체의 heading 기준)
+    const double yaw = tf2::getYaw(object.kinematics.initial_pose_with_covariance.pose.orientation);
+    const double cos_yaw = std::cos(yaw);
+    const double sin_yaw = std::sin(yaw);
+
+    // 회전 변환: (vx_local, vy_local) -> (vx_world, vy_world)
+    const double vx_world = vx_local * cos_yaw - vy_local * sin_yaw;
+    const double vy_world = vx_local * sin_yaw + vy_local * cos_yaw;
+
+    object_heading = Eigen::Vector2d(vx_world, vy_world).normalized();
+  } else {
+    // 차량: heading 방향 사용 (기존 방식)
+    object_heading = getObjectHeadingVector(object);
+  }
 
   // 차선의 방향 벡터 (단위 벡터)
   const auto lanelet_direction =
@@ -654,11 +700,12 @@ boost::optional<double> AbnormalBehaviorDetectorNode::getLaneletSpeedLimit(
 }
 
 void AbnormalBehaviorDetectorNode::updateObjectHistory(
-  const std::string & object_id, AbnormalBehaviorType behavior_type)
+  const std::string & object_id, AbnormalBehaviorType behavior_type,
+  const rclcpp::Time & current_time)
 {
   auto & history = object_history_[object_id];
   history.object_id = object_id;
-  history.last_update_time = now();
+  history.last_update_time = current_time;
 
   // 이력 추가
   history.history.push_back(behavior_type);
@@ -677,11 +724,18 @@ void AbnormalBehaviorDetectorNode::updateObjectHistory(
 void AbnormalBehaviorDetectorNode::cleanupOldHistory(const rclcpp::Time & current_time)
 {
   for (auto it = object_history_.begin(); it != object_history_.end();) {
-    const double elapsed = (current_time - it->second.last_update_time).seconds();
-    if (elapsed > history_timeout_) {
+    try {
+      // KMS_251113: Time source가 다를 수 있으므로 try-catch로 보호
+      const double elapsed = (current_time - it->second.last_update_time).seconds();
+      if (elapsed > history_timeout_) {
+        it = object_history_.erase(it);
+      } else {
+        ++it;
+      }
+    } catch (const std::runtime_error & e) {
+      // Time source가 달라서 빼기 실패 → 이 객체는 이전 time source 것이므로 삭제
+      RCLCPP_DEBUG(get_logger(), "Removing object history due to time source mismatch: %s", e.what());
       it = object_history_.erase(it);
-    } else {
-      ++it;
     }
   }
 }
@@ -729,7 +783,8 @@ std::string AbnormalBehaviorDetectorNode::getStableObjectId(const PredictedObjec
 }
 
 visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMarkers(
-  const std::vector<std::pair<PredictedObject, AbnormalBehaviorInfo>> & abnormal_objects)
+  const std::vector<std::pair<PredictedObject, AbnormalBehaviorInfo>> & abnormal_objects,
+  const rclcpp::Time & current_time)
 {
   visualization_msgs::msg::MarkerArray marker_array;
   int marker_id = 0;
@@ -738,7 +793,7 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
     // 텍스트 마커
     visualization_msgs::msg::Marker text_marker;
     text_marker.header.frame_id = "map";
-    text_marker.header.stamp = now();
+    text_marker.header.stamp = current_time;
     text_marker.ns = "abnormal_behavior_text";
     text_marker.id = marker_id++;
     text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
@@ -784,6 +839,45 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
   }
 
   return marker_array;
+}
+
+// KMS_251113: Heading 안정화 함수 (보행자 오검출 방지)
+double AbnormalBehaviorDetectorNode::getSmoothedHeading(
+  const std::string & object_id, double current_yaw)
+{
+  auto & history = object_history_[object_id];
+
+  // 현재 yaw를 이력에 추가
+  history.heading_history.push_back(current_yaw);
+
+  // 최대 5프레임 이력 유지 (0.5초 @ 10Hz)
+  const size_t max_heading_history = 5;
+  if (history.heading_history.size() > max_heading_history) {
+    history.heading_history.erase(history.heading_history.begin());
+  }
+
+  // 단일 프레임이면 그대로 반환
+  if (history.heading_history.size() == 1) {
+    return current_yaw;
+  }
+
+  // KMS_251113: 각도 평균 계산 (원형 평균)
+  // 0도와 359도를 평균내면 179.5도가 나오는 문제 방지
+  double sin_sum = 0.0;
+  double cos_sum = 0.0;
+
+  for (const double yaw : history.heading_history) {
+    sin_sum += std::sin(yaw);
+    cos_sum += std::cos(yaw);
+  }
+
+  const double avg_sin = sin_sum / history.heading_history.size();
+  const double avg_cos = cos_sum / history.heading_history.size();
+
+  // atan2로 평균 각도 계산
+  const double smoothed_yaw = std::atan2(avg_sin, avg_cos);
+
+  return smoothed_yaw;
 }
 
 }  // namespace abnormal_behavior_detector
