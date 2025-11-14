@@ -33,15 +33,47 @@
     # ============================================
     # 3D 모델 사용 여부
     # - true: 클래스별 3D 모델로 시각화 (car.obj, truck.obj 등)
-    # - false: 기존 방식 (빨간색 원형 마커)
+    # - false: 기존 방식 (빨간색 직육면체)
     use_3d_model_visualization: true
+
+    # ============================================
+    # 객체 클래스별 시각화 색상
+    # ============================================
+    # Hex 포맷: "#RRGGBB" 또는 "#RRGGBBAA" (투명도 포함)
+    # VSCode 확장 "Color Highlight" 설치 권장
+    #
+    # 색상 변경 방법:
+    # 1. 온라인 Color Picker 사용: https://htmlcolorcodes.com/color-picker/
+    # 2. Hex 코드 복사 → 아래 값 수정
+    # 3. 투명도: FF(불투명), 80(반투명), 00(완전투명)
+
+    # #80FF80 - 연한 형광 초록
+    color_car: "#80FF80FF"
+
+    # #FFFFFF - 하얀색
+    color_truck: "#FFFFFFFF"
+
+    # #80B3FF - 연한 파랑
+    color_bus: "#80B3FFFF"
+
+    # #FFFF00 - 노란색
+    color_motorcycle: "#FFFF00FF"
+
+    # #FF9900 - 주황색
+    color_bicycle: "#FF9900FF"
+
+    # #FF66B3 - 핑크색
+    color_pedestrian: "#FF66B3FF"
+
+    # #FFFFFF - 하얀색
+    color_default: "#FFFFFFFF"
 
     # ============================================
     # 이상 행동 탐지 활성화 플래그
     # ============================================
     detect_over_speed: false      # 과속 탐지 활성화
     detect_under_speed: false     # 저속 탐지 활성화
-    detect_abnormal_stop: false   # 비정상 정지 탐지 활성화
+    detect_abnormal_stop: true   # 비정상 정지 탐지 활성화
 
     # ============================================
     # 객체 클래스별 역주행 검출 활성화

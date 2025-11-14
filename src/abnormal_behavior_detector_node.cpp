@@ -70,6 +70,51 @@ AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOpt
   // Visualization settings
   use_3d_model_visualization_ = declare_parameter<bool>("use_3d_model_visualization", true);
 
+  // Class-specific colors (Hex 형식: "#RRGGBB" 또는 "#RRGGBBAA")
+  auto parse_hex_color = [](const std::string & hex_str, ClassColor & color,
+                             double r_def, double g_def, double b_def, double a_def) {
+    // 기본값 설정
+    color.r = r_def; color.g = g_def; color.b = b_def; color.a = a_def;
+
+    if (hex_str.empty() || hex_str[0] != '#') return;
+
+    std::string hex = hex_str.substr(1);  // '#' 제거
+
+    try {
+      if (hex.length() == 6) {
+        // #RRGGBB 형식
+        color.r = std::stoi(hex.substr(0, 2), nullptr, 16) / 255.0;
+        color.g = std::stoi(hex.substr(2, 2), nullptr, 16) / 255.0;
+        color.b = std::stoi(hex.substr(4, 2), nullptr, 16) / 255.0;
+        color.a = 1.0;
+      } else if (hex.length() == 8) {
+        // #RRGGBBAA 형식
+        color.r = std::stoi(hex.substr(0, 2), nullptr, 16) / 255.0;
+        color.g = std::stoi(hex.substr(2, 2), nullptr, 16) / 255.0;
+        color.b = std::stoi(hex.substr(4, 2), nullptr, 16) / 255.0;
+        color.a = std::stoi(hex.substr(6, 2), nullptr, 16) / 255.0;
+      }
+    } catch (...) {
+      // 파싱 실패 시 기본값 유지
+    }
+  };
+
+  auto load_color = [this, &parse_hex_color](const std::string & param_name, ClassColor & color,
+                                              const std::string & default_hex) {
+    std::string hex = declare_parameter<std::string>(param_name, default_hex);
+    double r_def = 1.0, g_def = 1.0, b_def = 1.0, a_def = 1.0;
+    parse_hex_color(default_hex, color, r_def, g_def, b_def, a_def);  // 기본값 먼저 파싱
+    parse_hex_color(hex, color, color.r, color.g, color.b, color.a);   // 실제값 파싱
+  };
+
+  load_color("color_car", color_car_, "#80FF80FF");
+  load_color("color_truck", color_truck_, "#FFFFFFFF");
+  load_color("color_bus", color_bus_, "#80B3FFFF");
+  load_color("color_motorcycle", color_motorcycle_, "#FFFF00FF");
+  load_color("color_bicycle", color_bicycle_, "#FF9900FF");
+  load_color("color_pedestrian", color_pedestrian_, "#FF66B3FF");
+  load_color("color_default", color_default_, "#FFFFFFFF");
+
   // Transform listener
   transform_listener_ = std::make_shared<tier4_autoware_utils::TransformListener>(this);
 
@@ -917,11 +962,25 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
       visual_marker.scale.y = scale_y;
       visual_marker.scale.z = scale_z;
 
-      // 하얀색으로 표시
-      visual_marker.color.r = 1.0;
-      visual_marker.color.g = 1.0;
-      visual_marker.color.b = 1.0;
-      visual_marker.color.a = 1.0;
+      // 클래스별 색상 적용
+      ClassColor selected_color = color_default_;
+      if (!object.classification.empty()) {
+        const uint8_t label = object.classification[0].label;
+        switch (label) {
+          case 1: selected_color = color_car_; break;
+          case 2: selected_color = color_truck_; break;
+          case 3: selected_color = color_bus_; break;
+          case 5: selected_color = color_motorcycle_; break;
+          case 6: selected_color = color_bicycle_; break;
+          case 7: selected_color = color_pedestrian_; break;
+          default: selected_color = color_default_; break;
+        }
+      }
+
+      visual_marker.color.r = selected_color.r;
+      visual_marker.color.g = selected_color.g;
+      visual_marker.color.b = selected_color.b;
+      visual_marker.color.a = selected_color.a;
 
     } else {
       // ========== 직육면체(CUBE) 시각화 (기존 방식) ==========
@@ -949,11 +1008,25 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
         visual_marker.scale.z = 2.0;
       }
 
-      // 빨간색으로 표시
-      visual_marker.color.r = 1.0;
-      visual_marker.color.g = 0.0;
-      visual_marker.color.b = 0.0;
-      visual_marker.color.a = 0.5;  // 반투명
+      // 클래스별 색상 적용 (직육면체도 동일)
+      ClassColor selected_color = color_default_;
+      if (!object.classification.empty()) {
+        const uint8_t label = object.classification[0].label;
+        switch (label) {
+          case 1: selected_color = color_car_; break;
+          case 2: selected_color = color_truck_; break;
+          case 3: selected_color = color_bus_; break;
+          case 5: selected_color = color_motorcycle_; break;
+          case 6: selected_color = color_bicycle_; break;
+          case 7: selected_color = color_pedestrian_; break;
+          default: selected_color = color_default_; break;
+        }
+      }
+
+      visual_marker.color.r = selected_color.r;
+      visual_marker.color.g = selected_color.g;
+      visual_marker.color.b = selected_color.b;
+      visual_marker.color.a = selected_color.a * 0.5;  // 직육면체는 50% 투명도
     }
 
     marker_array.markers.push_back(visual_marker);

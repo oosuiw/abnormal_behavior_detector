@@ -150,6 +150,18 @@ private:
   // Visualization settings
   bool use_3d_model_visualization_;  // 3D 모델 vs 직육면체 시각화 선택
 
+  // Class-specific colors (RGBA)
+  struct ClassColor {
+    double r, g, b, a;
+  };
+  ClassColor color_car_;
+  ClassColor color_truck_;
+  ClassColor color_bus_;
+  ClassColor color_motorcycle_;
+  ClassColor color_bicycle_;
+  ClassColor color_pedestrian_;
+  ClassColor color_default_;
+
   // Callbacks
   void onObjects(const PredictedObjects::ConstSharedPtr msg);
   void onMap(const HADMapBin::ConstSharedPtr msg);
