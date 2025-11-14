@@ -147,6 +147,9 @@ private:
   bool detect_wrong_way_for_pedestrian_;
   bool detect_wrong_way_for_unknown_;
 
+  // Visualization settings
+  bool use_3d_model_visualization_;  // 3D 모델 vs 직육면체 시각화 선택
+
   // Callbacks
   void onObjects(const PredictedObjects::ConstSharedPtr msg);
   void onMap(const HADMapBin::ConstSharedPtr msg);

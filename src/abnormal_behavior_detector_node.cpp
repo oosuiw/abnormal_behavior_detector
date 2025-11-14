@@ -67,6 +67,9 @@ AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOpt
   detect_wrong_way_for_pedestrian_ = declare_parameter<bool>("detect_wrong_way_for_pedestrian", false);
   detect_wrong_way_for_unknown_ = declare_parameter<bool>("detect_wrong_way_for_unknown", false);
 
+  // Visualization settings
+  use_3d_model_visualization_ = declare_parameter<bool>("use_3d_model_visualization", true);
+
   // Transform listener
   transform_listener_ = std::make_shared<tier4_autoware_utils::TransformListener>(this);
 
@@ -813,116 +816,147 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
 
     marker_array.markers.push_back(text_marker);
 
-    // KMS_251113: 3D 모델 마커 (객체 크기에 맞춰 스케일링)
-    visualization_msgs::msg::Marker model_marker;
-    model_marker.header = text_marker.header;
-    model_marker.ns = "abnormal_behavior_model";
-    model_marker.id = marker_id++;
-    model_marker.type = visualization_msgs::msg::Marker::MESH_RESOURCE;
-    model_marker.action = visualization_msgs::msg::Marker::ADD;
+    // KMS_251113: 시각화 마커 (파라미터에 따라 3D 모델 또는 직육면체)
+    visualization_msgs::msg::Marker visual_marker;
+    visual_marker.header = text_marker.header;
+    visual_marker.ns = "abnormal_behavior_visual";
+    visual_marker.id = marker_id++;
+    visual_marker.action = visualization_msgs::msg::Marker::ADD;
+    visual_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
 
-    model_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
+    if (use_3d_model_visualization_) {
+      // ========== 3D 모델 시각화 ==========
+      visual_marker.type = visualization_msgs::msg::Marker::MESH_RESOURCE;
+      visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
 
-    // KMS_251113: 클래스별 모델 및 실제 제원 선택
-    std::string model_path = "package://abnormal_behavior_detector/models/car.obj";
-    double model_base_length = 4.45;   // 기본값: 프리우스 2세대 길이 (m)
-    double model_base_width = 1.725;   // 기본값: 프리우스 2세대 폭 (m)
-    double model_base_height = 1.49;   // 기본값: 프리우스 2세대 높이 (m)
+      // 클래스별 모델 및 실제 제원 선택
+      std::string model_path = "package://abnormal_behavior_detector/models/car.obj";
+      double model_base_length = 4.45;   // 기본값: 프리우스 2세대 길이 (m)
+      double model_base_width = 1.725;   // 기본값: 프리우스 2세대 폭 (m)
+      double model_base_height = 1.49;   // 기본값: 프리우스 2세대 높이 (m)
 
-    if (!object.classification.empty()) {
-      const uint8_t label = object.classification[0].label;
-      switch (label) {
-        case 1:  // CAR
-          model_path = "package://abnormal_behavior_detector/models/car.obj";
-          model_base_length = 4.45;
-          model_base_width = 1.725;
-          model_base_height = 1.49;
-          break;
-        case 2:  // TRUCK
-          model_path = "package://abnormal_behavior_detector/models/truck.obj";
-          model_base_length = 6.0;
-          model_base_width = 2.0;
-          model_base_height = 1.9;
-          break;
-        case 3:  // BUS
-          model_path = "package://abnormal_behavior_detector/models/bus.obj";
-          model_base_length = 12.0;
-          model_base_width = 2.55;
-          model_base_height = 3.0;
-          break;
-        case 5:  // MOTORCYCLE
-          model_path = "package://abnormal_behavior_detector/models/motorcycle.obj";
-          model_base_length = 2.2;
-          model_base_width = 0.8;
-          model_base_height = 1.2;
-          break;
-        case 6:  // BICYCLE
-          model_path = "package://abnormal_behavior_detector/models/bicycle.obj";
-          model_base_length = 1.75;
-          model_base_width = 0.5;
-          model_base_height = 1.0;
-          break;
-        case 7:  // PEDESTRIAN
-          model_path = "package://abnormal_behavior_detector/models/pedestrian.obj";
-          model_base_length = 0.5;
-          model_base_width = 0.47;
-          model_base_height = 1.7;
-          break;
-        default:
-          model_path = "package://abnormal_behavior_detector/models/car.obj";
-          model_base_length = 4.45;
-          model_base_width = 1.725;
-          model_base_height = 1.49;
+      if (!object.classification.empty()) {
+        const uint8_t label = object.classification[0].label;
+        switch (label) {
+          case 1:  // CAR
+            model_path = "package://abnormal_behavior_detector/models/car.obj";
+            model_base_length = 4.45;
+            model_base_width = 1.725;
+            model_base_height = 1.49;
+            break;
+          case 2:  // TRUCK
+            model_path = "package://abnormal_behavior_detector/models/truck.obj";
+            model_base_length = 6.0;
+            model_base_width = 2.0;
+            model_base_height = 1.9;
+            break;
+          case 3:  // BUS
+            model_path = "package://abnormal_behavior_detector/models/bus.obj";
+            model_base_length = 12.0;
+            model_base_width = 2.55;
+            model_base_height = 3.0;
+            break;
+          case 5:  // MOTORCYCLE
+            model_path = "package://abnormal_behavior_detector/models/motorcycle.obj";
+            model_base_length = 2.2;
+            model_base_width = 0.8;
+            model_base_height = 1.2;
+            break;
+          case 6:  // BICYCLE
+            model_path = "package://abnormal_behavior_detector/models/bicycle.obj";
+            model_base_length = 1.75;
+            model_base_width = 0.5;
+            model_base_height = 1.0;
+            break;
+          case 7:  // PEDESTRIAN
+            model_path = "package://abnormal_behavior_detector/models/pedestrian.obj";
+            model_base_length = 0.5;
+            model_base_width = 0.47;
+            model_base_height = 1.7;
+            break;
+          default:
+            model_path = "package://abnormal_behavior_detector/models/car.obj";
+            model_base_length = 4.45;
+            model_base_width = 1.725;
+            model_base_height = 1.49;
+        }
       }
+
+      visual_marker.mesh_resource = model_path;
+      visual_marker.mesh_use_embedded_materials = false;  // 색상을 직접 지정
+
+      // 반시계방향 90도 회전 (Z축 기준) - 모든 모델에 적용
+      tf2::Quaternion rotation;
+      rotation.setRPY(0, 0, M_PI / 2.0);  // 90도 = π/2 rad
+
+      // 기존 orientation과 합성
+      tf2::Quaternion original_orientation;
+      tf2::fromMsg(object.kinematics.initial_pose_with_covariance.pose.orientation, original_orientation);
+
+      tf2::Quaternion combined_orientation = original_orientation * rotation;
+      visual_marker.pose.orientation = tf2::toMsg(combined_orientation);
+
+      // 객체의 실제 크기(shape)에 맞춰 스케일 조정 (100배 축소)
+      double scale_x = 0.01;  // 100배 축소
+      double scale_y = 0.01;
+      double scale_z = 0.01;
+
+      if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
+        const double object_length = object.shape.dimensions.x;
+        const double object_width = object.shape.dimensions.y;
+        const double object_height = object.shape.dimensions.z;
+
+        if (model_base_length > 0.01 && model_base_width > 0.01 && model_base_height > 0.01) {
+          scale_x = (object_length / model_base_length) * 0.01;
+          scale_y = (object_width / model_base_width) * 0.01;
+          scale_z = (object_height / model_base_height) * 0.01;
+        }
+      }
+
+      visual_marker.scale.x = scale_x;
+      visual_marker.scale.y = scale_y;
+      visual_marker.scale.z = scale_z;
+
+      // 하얀색으로 표시
+      visual_marker.color.r = 1.0;
+      visual_marker.color.g = 1.0;
+      visual_marker.color.b = 1.0;
+      visual_marker.color.a = 1.0;
+
+    } else {
+      // ========== 직육면체(CUBE) 시각화 (기존 방식) ==========
+      visual_marker.type = visualization_msgs::msg::Marker::CUBE;
+      visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
+
+      // 반시계방향 90도 회전 적용 (직육면체도 동일하게)
+      tf2::Quaternion rotation;
+      rotation.setRPY(0, 0, M_PI / 2.0);
+
+      tf2::Quaternion original_orientation;
+      tf2::fromMsg(object.kinematics.initial_pose_with_covariance.pose.orientation, original_orientation);
+
+      tf2::Quaternion combined_orientation = original_orientation * rotation;
+      visual_marker.pose.orientation = tf2::toMsg(combined_orientation);
+
+      // 객체의 실제 크기 사용
+      if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
+        visual_marker.scale.x = object.shape.dimensions.x;
+        visual_marker.scale.y = object.shape.dimensions.y;
+        visual_marker.scale.z = object.shape.dimensions.z;
+      } else {
+        visual_marker.scale.x = 2.0;
+        visual_marker.scale.y = 2.0;
+        visual_marker.scale.z = 2.0;
+      }
+
+      // 빨간색으로 표시
+      visual_marker.color.r = 1.0;
+      visual_marker.color.g = 0.0;
+      visual_marker.color.b = 0.0;
+      visual_marker.color.a = 0.5;  // 반투명
     }
 
-    model_marker.mesh_resource = model_path;
-    model_marker.mesh_use_embedded_materials = false;  // 색상을 직접 지정
-
-    // KMS_251113: 반시계방향 90도 회전 (Z축 기준)
-    tf2::Quaternion rotation;
-    rotation.setRPY(0, 0, M_PI / 2.0);  // 90도 = π/2 rad
-
-    // 기존 orientation과 합성
-    tf2::Quaternion original_orientation;
-    tf2::fromMsg(object.kinematics.initial_pose_with_covariance.pose.orientation, original_orientation);
-
-    tf2::Quaternion combined_orientation = original_orientation * rotation;
-    model_marker.pose.orientation = tf2::toMsg(combined_orientation);
-
-    // KMS_251113: 객체의 실제 크기(shape)에 맞춰 스케일 조정 (100배 축소)
-    // shape: [length(x), width(y), height(z)]
-    double scale_x = 0.01;  // 100배 축소
-    double scale_y = 0.01;
-    double scale_z = 0.01;
-
-    if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
-      // 실제 객체 크기 (dimensions는 Vector3 타입)
-      const double object_length = object.shape.dimensions.x;
-      const double object_width = object.shape.dimensions.y;
-      const double object_height = object.shape.dimensions.z;
-
-      // 스케일 계산 (실제 크기 / 모델 크기) × 0.01 (100배 축소)
-      if (model_base_length > 0.01 && model_base_width > 0.01 && model_base_height > 0.01) {
-        scale_x = (object_length / model_base_length) * 0.01;
-        scale_y = (object_width / model_base_width) * 0.01;
-        scale_z = (object_height / model_base_height) * 0.01;
-      }
-    }
-
-    model_marker.scale.x = scale_x;
-    model_marker.scale.y = scale_y;
-    model_marker.scale.z = scale_z;
-
-    // 하얀색으로 표시
-    model_marker.color.r = 1.0;
-    model_marker.color.g = 1.0;
-    model_marker.color.b = 1.0;
-    model_marker.color.a = 1.0;  // 불투명
-
-    model_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
-
-    marker_array.markers.push_back(model_marker);
+    marker_array.markers.push_back(visual_marker);
   }
 
   return marker_array;
