@@ -332,6 +332,15 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
     debug_info.matched_lanelet_id = -1;
     debug_info.behavior_type = "NORMAL";
     debug_info.description = is_on_lanelet ? "On lanelet but no direction match" : "Not on lanelet";
+
+    // 디버그: lanelet 매칭 실패 이유 로그
+    RCLCPP_DEBUG(
+      get_logger(), "[%s] Class=%d, Speed=%.1fkm/h - %s (lanelet_opt=%s, on_lanelet=%s)",
+      info.object_id.c_str(), debug_info.object_class, debug_info.speed_kmh,
+      debug_info.description.c_str(),
+      closest_lanelet_opt ? "true" : "false",
+      is_on_lanelet ? "true" : "false");
+
     return info;  // 차선을 찾을 수 없으면 정상으로 판단
   }
 
@@ -350,6 +359,33 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   }
 
   // 1. 역주행 검출 (우선순위 최상위)
+  // 클래스별 역주행 검출 활성화 여부 확인
+  bool should_detect_wrong_way = true;
+  if (!object.classification.empty()) {
+    const uint8_t label = object.classification[0].label;
+    switch (label) {
+      case 0: should_detect_wrong_way = detect_wrong_way_for_unknown_; break;
+      case 1: should_detect_wrong_way = detect_wrong_way_for_car_; break;
+      case 2: should_detect_wrong_way = detect_wrong_way_for_truck_; break;
+      case 3: should_detect_wrong_way = detect_wrong_way_for_bus_; break;
+      case 4: should_detect_wrong_way = detect_wrong_way_for_trailer_; break;
+      case 5: should_detect_wrong_way = detect_wrong_way_for_motorcycle_; break;
+      case 6: should_detect_wrong_way = detect_wrong_way_for_bicycle_; break;
+      case 7: should_detect_wrong_way = detect_wrong_way_for_pedestrian_; break;
+      default: should_detect_wrong_way = detect_wrong_way_for_unknown_; break;
+    }
+  }
+
+  // 클래스별 검출이 비활성화된 경우 로그 출력
+  if (!should_detect_wrong_way) {
+    debug_info.behavior_type = "NORMAL";
+    debug_info.description = "Wrong-way detection disabled for this class";
+    RCLCPP_DEBUG(
+      get_logger(), "[%s] Class=%d - Wrong-way detection disabled",
+      info.object_id.c_str(), debug_info.object_class);
+    return info;
+  }
+
   if (isWrongWayDriving(object, lanelet, debug_info)) {
     updateObjectHistory(info.object_id, AbnormalBehaviorType::WRONG_WAY, current_time);
 
