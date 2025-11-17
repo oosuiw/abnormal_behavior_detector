@@ -89,7 +89,7 @@
     detect_wrong_way_for_motorcycle: true    # 오토바이 (MOTORCYCLE = 5)
     detect_wrong_way_for_bicycle: true      # 자전거 (BICYCLE = 6)
     detect_wrong_way_for_pedestrian: true   # 보행자 (PEDESTRIAN = 7)
-    detect_wrong_way_for_unknown: false      # 미분류 객체 (UNKNOWN = 0)
+    detect_wrong_way_for_unknown: true      # 미분류 객체 (UNKNOWN = 0)
 
     # ============================================
     # KMS_251107: 역주행 판단 파라미터 (곡선 도로 최적화)
