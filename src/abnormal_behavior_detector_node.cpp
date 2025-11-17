@@ -987,15 +987,8 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
       visual_marker.type = visualization_msgs::msg::Marker::CUBE;
       visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
 
-      // 반시계방향 90도 회전 적용 (직육면체도 동일하게)
-      tf2::Quaternion rotation;
-      rotation.setRPY(0, 0, M_PI / 2.0);
-
-      tf2::Quaternion original_orientation;
-      tf2::fromMsg(object.kinematics.initial_pose_with_covariance.pose.orientation, original_orientation);
-
-      tf2::Quaternion combined_orientation = original_orientation * rotation;
-      visual_marker.pose.orientation = tf2::toMsg(combined_orientation);
+      // KMS_251115: CUBE는 회전 적용하지 않음 (원래 orientation 그대로 사용)
+      // 3D 모델과 달리 CUBE는 추가 회전이 필요없음
 
       // 객체의 실제 크기 사용
       if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
