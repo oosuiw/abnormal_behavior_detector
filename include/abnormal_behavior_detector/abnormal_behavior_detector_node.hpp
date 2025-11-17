@@ -137,31 +137,6 @@ private:
   bool detect_under_speed_;
   bool detect_abnormal_stop_;
 
-  // Per-class wrong-way detection flags
-  bool detect_wrong_way_for_car_;
-  bool detect_wrong_way_for_truck_;
-  bool detect_wrong_way_for_bus_;
-  bool detect_wrong_way_for_trailer_;
-  bool detect_wrong_way_for_motorcycle_;
-  bool detect_wrong_way_for_bicycle_;
-  bool detect_wrong_way_for_pedestrian_;
-  bool detect_wrong_way_for_unknown_;
-
-  // Visualization settings
-  bool use_3d_model_visualization_;  // 3D 모델 vs 직육면체 시각화 선택
-
-  // Class-specific colors (RGBA)
-  struct ClassColor {
-    double r, g, b, a;
-  };
-  ClassColor color_car_;
-  ClassColor color_truck_;
-  ClassColor color_bus_;
-  ClassColor color_motorcycle_;
-  ClassColor color_bicycle_;
-  ClassColor color_pedestrian_;
-  ClassColor color_default_;
-
   // Callbacks
   void onObjects(const PredictedObjects::ConstSharedPtr msg);
   void onMap(const HADMapBin::ConstSharedPtr msg);

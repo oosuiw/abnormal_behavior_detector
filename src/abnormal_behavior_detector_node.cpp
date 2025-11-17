@@ -57,64 +57,6 @@ AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOpt
   detect_under_speed_ = declare_parameter<bool>("detect_under_speed", false);
   detect_abnormal_stop_ = declare_parameter<bool>("detect_abnormal_stop", false);
 
-  // Per-class wrong-way detection flags
-  detect_wrong_way_for_car_ = declare_parameter<bool>("detect_wrong_way_for_car", true);
-  detect_wrong_way_for_truck_ = declare_parameter<bool>("detect_wrong_way_for_truck", true);
-  detect_wrong_way_for_bus_ = declare_parameter<bool>("detect_wrong_way_for_bus", true);
-  detect_wrong_way_for_trailer_ = declare_parameter<bool>("detect_wrong_way_for_trailer", true);
-  detect_wrong_way_for_motorcycle_ = declare_parameter<bool>("detect_wrong_way_for_motorcycle", true);
-  detect_wrong_way_for_bicycle_ = declare_parameter<bool>("detect_wrong_way_for_bicycle", false);
-  detect_wrong_way_for_pedestrian_ = declare_parameter<bool>("detect_wrong_way_for_pedestrian", false);
-  detect_wrong_way_for_unknown_ = declare_parameter<bool>("detect_wrong_way_for_unknown", false);
-
-  // Visualization settings
-  use_3d_model_visualization_ = declare_parameter<bool>("use_3d_model_visualization", true);
-
-  // Class-specific colors (Hex 형식: "#RRGGBB" 또는 "#RRGGBBAA")
-  auto parse_hex_color = [](const std::string & hex_str, ClassColor & color,
-                             double r_def, double g_def, double b_def, double a_def) {
-    // 기본값 설정
-    color.r = r_def; color.g = g_def; color.b = b_def; color.a = a_def;
-
-    if (hex_str.empty() || hex_str[0] != '#') return;
-
-    std::string hex = hex_str.substr(1);  // '#' 제거
-
-    try {
-      if (hex.length() == 6) {
-        // #RRGGBB 형식
-        color.r = std::stoi(hex.substr(0, 2), nullptr, 16) / 255.0;
-        color.g = std::stoi(hex.substr(2, 2), nullptr, 16) / 255.0;
-        color.b = std::stoi(hex.substr(4, 2), nullptr, 16) / 255.0;
-        color.a = 1.0;
-      } else if (hex.length() == 8) {
-        // #RRGGBBAA 형식
-        color.r = std::stoi(hex.substr(0, 2), nullptr, 16) / 255.0;
-        color.g = std::stoi(hex.substr(2, 2), nullptr, 16) / 255.0;
-        color.b = std::stoi(hex.substr(4, 2), nullptr, 16) / 255.0;
-        color.a = std::stoi(hex.substr(6, 2), nullptr, 16) / 255.0;
-      }
-    } catch (...) {
-      // 파싱 실패 시 기본값 유지
-    }
-  };
-
-  auto load_color = [this, &parse_hex_color](const std::string & param_name, ClassColor & color,
-                                              const std::string & default_hex) {
-    std::string hex = declare_parameter<std::string>(param_name, default_hex);
-    double r_def = 1.0, g_def = 1.0, b_def = 1.0, a_def = 1.0;
-    parse_hex_color(default_hex, color, r_def, g_def, b_def, a_def);  // 기본값 먼저 파싱
-    parse_hex_color(hex, color, color.r, color.g, color.b, color.a);   // 실제값 파싱
-  };
-
-  load_color("color_car", color_car_, "#80FF80FF");
-  load_color("color_truck", color_truck_, "#FFFFFFFF");
-  load_color("color_bus", color_bus_, "#80B3FFFF");
-  load_color("color_motorcycle", color_motorcycle_, "#FFFF00FF");
-  load_color("color_bicycle", color_bicycle_, "#FF9900FF");
-  load_color("color_pedestrian", color_pedestrian_, "#FF66B3FF");
-  load_color("color_default", color_default_, "#FFFFFFFF");
-
   // Transform listener
   transform_listener_ = std::make_shared<tier4_autoware_utils::TransformListener>(this);
 
@@ -359,33 +301,6 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   }
 
   // 1. 역주행 검출 (우선순위 최상위)
-  // 클래스별 역주행 검출 활성화 여부 확인
-  bool should_detect_wrong_way = true;
-  if (!object.classification.empty()) {
-    const uint8_t label = object.classification[0].label;
-    switch (label) {
-      case 0: should_detect_wrong_way = detect_wrong_way_for_unknown_; break;
-      case 1: should_detect_wrong_way = detect_wrong_way_for_car_; break;
-      case 2: should_detect_wrong_way = detect_wrong_way_for_truck_; break;
-      case 3: should_detect_wrong_way = detect_wrong_way_for_bus_; break;
-      case 4: should_detect_wrong_way = detect_wrong_way_for_trailer_; break;
-      case 5: should_detect_wrong_way = detect_wrong_way_for_motorcycle_; break;
-      case 6: should_detect_wrong_way = detect_wrong_way_for_bicycle_; break;
-      case 7: should_detect_wrong_way = detect_wrong_way_for_pedestrian_; break;
-      default: should_detect_wrong_way = detect_wrong_way_for_unknown_; break;
-    }
-  }
-
-  // 클래스별 검출이 비활성화된 경우 로그 출력
-  if (!should_detect_wrong_way) {
-    debug_info.behavior_type = "NORMAL";
-    debug_info.description = "Wrong-way detection disabled for this class";
-    RCLCPP_DEBUG(
-      get_logger(), "[%s] Class=%d - Wrong-way detection disabled",
-      info.object_id.c_str(), debug_info.object_class);
-    return info;
-  }
-
   if (isWrongWayDriving(object, lanelet, debug_info)) {
     updateObjectHistory(info.object_id, AbnormalBehaviorType::WRONG_WAY, current_time);
 
@@ -461,43 +376,38 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
   const PredictedObject & object, const lanelet::ConstLanelet & matched_lanelet,
   ObjectDebugInfo & debug_info)
 {
-
-
   // 속도 체크 - 저속 객체(보행자 등)는 역주행 검출에서 제외
   const double object_speed = getObjectSpeed(object);
   if (object_speed < min_speed_for_wrong_way_) {
     return false;  // 너무 느리면 역주행 검출 제외 (보행자 오검출 방지)
   }
 
-  // KMS_251113: 보행자는 velocity 기반 방향 판단 (heading이 부정확함)
-  constexpr uint8_t PEDESTRIAN = 7;
-  Eigen::Vector2d object_heading;
+  Eigen::Vector2d object_direction;
 
-  if (!object.classification.empty() && object.classification[0].label == PEDESTRIAN) {
-    // 보행자: velocity 방향 사용 (heading보다 정확)
-    const auto & twist = object.kinematics.initial_twist_with_covariance.twist;
-    const double vx_local = twist.linear.x;
-    const double vy_local = twist.linear.y;
+  // PredictedPath 사용 (가장 정확)
+  if (!object.kinematics.predicted_paths.empty()) {
+    const auto & predicted_path = object.kinematics.predicted_paths[0];
 
-    if (std::abs(vx_local) < 0.1 && std::abs(vy_local) < 0.1) {
-      // 속도가 거의 없으면 방향 판단 불가
-      return false;
+    if (predicted_path.path.size() >= 2) {
+      // 현재 위치에서 미래 위치로의 방향 벡터 계산
+      const auto & current_pos = object.kinematics.initial_pose_with_covariance.pose.position;
+      const auto & future_pos = predicted_path.path[std::min(predicted_path.path.size() - 1, size_t(5))].position;
+
+      const double dx = future_pos.x - current_pos.x;
+      const double dy = future_pos.y - current_pos.y;
+      const double dist = std::sqrt(dx * dx + dy * dy);
+
+      if (dist > 0.5) {
+        object_direction = Eigen::Vector2d(dx, dy).normalized();
+      } else {
+        object_direction = getObjectHeadingVector(object);
+      }
+    } else {
+      object_direction = getObjectHeadingVector(object);
     }
-
-    // KMS_251113: Velocity를 월드 좌표계로 변환
-    // twist.linear는 로컬 좌표계 (객체의 heading 기준)
-    const double yaw = tf2::getYaw(object.kinematics.initial_pose_with_covariance.pose.orientation);
-    const double cos_yaw = std::cos(yaw);
-    const double sin_yaw = std::sin(yaw);
-
-    // 회전 변환: (vx_local, vy_local) -> (vx_world, vy_world)
-    const double vx_world = vx_local * cos_yaw - vy_local * sin_yaw;
-    const double vy_world = vx_local * sin_yaw + vy_local * cos_yaw;
-
-    object_heading = Eigen::Vector2d(vx_world, vy_world).normalized();
   } else {
-    // 차량: heading 방향 사용 (기존 방식)
-    object_heading = getObjectHeadingVector(object);
+    // PredictedPath가 없으면 heading 사용
+    object_direction = getObjectHeadingVector(object);
   }
 
   // 차선의 방향 벡터 (단위 벡터)
@@ -505,7 +415,7 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
     getLaneletDirectionVector(matched_lanelet, object.kinematics.initial_pose_with_covariance.pose.position);
 
   // 내적 계산 (두 벡터가 단위 벡터이므로 바로 cos(θ))
-  const double dot_product = object_heading.dot(lanelet_direction);
+  const double dot_product = object_direction.dot(lanelet_direction);
 
   // 각도 계산
   const double angle_rad = std::acos(std::clamp(dot_product, -1.0, 1.0));
@@ -513,8 +423,8 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
   const double cos_threshold = std::cos(wrong_way_angle_threshold_);
 
   // Debug info에 정보 채우기
-  debug_info.object_heading_vector.x = object_heading.x();
-  debug_info.object_heading_vector.y = object_heading.y();
+  debug_info.object_heading_vector.x = object_direction.x();
+  debug_info.object_heading_vector.y = object_direction.y();
   debug_info.object_heading_vector.z = 0.0;
   debug_info.lanelet_direction_vector.x = lanelet_direction.x();
   debug_info.lanelet_direction_vector.y = lanelet_direction.y();
@@ -852,166 +762,32 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
 
     marker_array.markers.push_back(text_marker);
 
-    // KMS_251113: 시각화 마커 (파라미터에 따라 3D 모델 또는 직육면체)
+    // 시각화 마커 (빨간색 CUBE)
     visualization_msgs::msg::Marker visual_marker;
     visual_marker.header = text_marker.header;
     visual_marker.ns = "abnormal_behavior_visual";
     visual_marker.id = marker_id++;
     visual_marker.action = visualization_msgs::msg::Marker::ADD;
     visual_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+    visual_marker.type = visualization_msgs::msg::Marker::CUBE;
+    visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
 
-    if (use_3d_model_visualization_) {
-      // ========== 3D 모델 시각화 ==========
-      visual_marker.type = visualization_msgs::msg::Marker::MESH_RESOURCE;
-      visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
-
-      // 클래스별 모델 및 실제 제원 선택
-      std::string model_path = "package://abnormal_behavior_detector/models/car.obj";
-      double model_base_length = 4.45;   // 기본값: 프리우스 2세대 길이 (m)
-      double model_base_width = 1.725;   // 기본값: 프리우스 2세대 폭 (m)
-      double model_base_height = 1.49;   // 기본값: 프리우스 2세대 높이 (m)
-
-      if (!object.classification.empty()) {
-        const uint8_t label = object.classification[0].label;
-        switch (label) {
-          case 1:  // CAR
-            model_path = "package://abnormal_behavior_detector/models/car.obj";
-            model_base_length = 4.45;
-            model_base_width = 1.725;
-            model_base_height = 1.49;
-            break;
-          case 2:  // TRUCK
-            model_path = "package://abnormal_behavior_detector/models/truck.obj";
-            model_base_length = 6.0;
-            model_base_width = 2.0;
-            model_base_height = 1.9;
-            break;
-          case 3:  // BUS
-            model_path = "package://abnormal_behavior_detector/models/bus.obj";
-            model_base_length = 12.0;
-            model_base_width = 2.55;
-            model_base_height = 3.0;
-            break;
-          case 5:  // MOTORCYCLE
-            model_path = "package://abnormal_behavior_detector/models/motorcycle.obj";
-            model_base_length = 2.2;
-            model_base_width = 0.8;
-            model_base_height = 1.2;
-            break;
-          case 6:  // BICYCLE
-            model_path = "package://abnormal_behavior_detector/models/bicycle.obj";
-            model_base_length = 1.75;
-            model_base_width = 0.5;
-            model_base_height = 1.0;
-            break;
-          case 7:  // PEDESTRIAN
-            model_path = "package://abnormal_behavior_detector/models/pedestrian.obj";
-            model_base_length = 0.5;
-            model_base_width = 0.47;
-            model_base_height = 1.7;
-            break;
-          default:
-            model_path = "package://abnormal_behavior_detector/models/car.obj";
-            model_base_length = 4.45;
-            model_base_width = 1.725;
-            model_base_height = 1.49;
-        }
-      }
-
-      visual_marker.mesh_resource = model_path;
-      visual_marker.mesh_use_embedded_materials = false;  // 색상을 직접 지정
-
-      // 반시계방향 90도 회전 (Z축 기준) - 모든 모델에 적용
-      tf2::Quaternion rotation;
-      rotation.setRPY(0, 0, M_PI / 2.0);  // 90도 = π/2 rad
-
-      // 기존 orientation과 합성
-      tf2::Quaternion original_orientation;
-      tf2::fromMsg(object.kinematics.initial_pose_with_covariance.pose.orientation, original_orientation);
-
-      tf2::Quaternion combined_orientation = original_orientation * rotation;
-      visual_marker.pose.orientation = tf2::toMsg(combined_orientation);
-
-      // 객체의 실제 크기(shape)에 맞춰 스케일 조정 (100배 축소)
-      double scale_x = 0.01;  // 100배 축소
-      double scale_y = 0.01;
-      double scale_z = 0.01;
-
-      if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
-        const double object_length = object.shape.dimensions.x;
-        const double object_width = object.shape.dimensions.y;
-        const double object_height = object.shape.dimensions.z;
-
-        if (model_base_length > 0.01 && model_base_width > 0.01 && model_base_height > 0.01) {
-          scale_x = (object_length / model_base_length) * 0.01;
-          scale_y = (object_width / model_base_width) * 0.01;
-          scale_z = (object_height / model_base_height) * 0.01;
-        }
-      }
-
-      visual_marker.scale.x = scale_x;
-      visual_marker.scale.y = scale_y;
-      visual_marker.scale.z = scale_z;
-
-      // 클래스별 색상 적용
-      ClassColor selected_color = color_default_;
-      if (!object.classification.empty()) {
-        const uint8_t label = object.classification[0].label;
-        switch (label) {
-          case 1: selected_color = color_car_; break;
-          case 2: selected_color = color_truck_; break;
-          case 3: selected_color = color_bus_; break;
-          case 5: selected_color = color_motorcycle_; break;
-          case 6: selected_color = color_bicycle_; break;
-          case 7: selected_color = color_pedestrian_; break;
-          default: selected_color = color_default_; break;
-        }
-      }
-
-      visual_marker.color.r = selected_color.r;
-      visual_marker.color.g = selected_color.g;
-      visual_marker.color.b = selected_color.b;
-      visual_marker.color.a = selected_color.a;
-
+    // 객체의 실제 크기 사용
+    if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
+      visual_marker.scale.x = object.shape.dimensions.x;
+      visual_marker.scale.y = object.shape.dimensions.y;
+      visual_marker.scale.z = object.shape.dimensions.z;
     } else {
-      // ========== 직육면체(CUBE) 시각화 (기존 방식) ==========
-      visual_marker.type = visualization_msgs::msg::Marker::CUBE;
-      visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
-
-      // KMS_251115: CUBE는 회전 적용하지 않음 (원래 orientation 그대로 사용)
-      // 3D 모델과 달리 CUBE는 추가 회전이 필요없음
-
-      // 객체의 실제 크기 사용
-      if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
-        visual_marker.scale.x = object.shape.dimensions.x;
-        visual_marker.scale.y = object.shape.dimensions.y;
-        visual_marker.scale.z = object.shape.dimensions.z;
-      } else {
-        visual_marker.scale.x = 2.0;
-        visual_marker.scale.y = 2.0;
-        visual_marker.scale.z = 2.0;
-      }
-
-      // 클래스별 색상 적용 (직육면체도 동일)
-      ClassColor selected_color = color_default_;
-      if (!object.classification.empty()) {
-        const uint8_t label = object.classification[0].label;
-        switch (label) {
-          case 1: selected_color = color_car_; break;
-          case 2: selected_color = color_truck_; break;
-          case 3: selected_color = color_bus_; break;
-          case 5: selected_color = color_motorcycle_; break;
-          case 6: selected_color = color_bicycle_; break;
-          case 7: selected_color = color_pedestrian_; break;
-          default: selected_color = color_default_; break;
-        }
-      }
-
-      visual_marker.color.r = selected_color.r;
-      visual_marker.color.g = selected_color.g;
-      visual_marker.color.b = selected_color.b;
-      visual_marker.color.a = selected_color.a * 0.5;  // 직육면체는 50% 투명도
+      visual_marker.scale.x = 2.0;
+      visual_marker.scale.y = 2.0;
+      visual_marker.scale.z = 2.0;
     }
+
+    // 빨간색 반투명
+    visual_marker.color.r = 1.0;
+    visual_marker.color.g = 0.0;
+    visual_marker.color.b = 0.0;
+    visual_marker.color.a = 0.5;
 
     marker_array.markers.push_back(visual_marker);
   }
