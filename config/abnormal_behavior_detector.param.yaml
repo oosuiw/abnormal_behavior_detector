@@ -73,7 +73,7 @@
     # ============================================
     detect_over_speed: false      # 과속 탐지 활성화
     detect_under_speed: false     # 저속 탐지 활성화
-    detect_abnormal_stop: true   # 비정상 정지 탐지 활성화
+    detect_abnormal_stop: false   # 비정상 정지 탐지 활성화
 
     # ============================================
     # 객체 클래스별 역주행 검출 활성화
