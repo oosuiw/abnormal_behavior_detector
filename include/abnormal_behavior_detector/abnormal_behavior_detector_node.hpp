@@ -115,37 +115,28 @@ private:
   std::unordered_map<std::string, ObjectAbnormalHistory> object_history_;
 
   // Parameters
-  double dist_threshold_for_searching_lanelet_;   // 차선 검색 거리 임계값
-  double delta_yaw_threshold_for_searching_lanelet_;  // 차선 검색 각도 임계값
-  double wrong_way_angle_threshold_;  // 역주행 판단 각도 임계값 (라디안)
-  double min_speed_for_wrong_way_;    // 역주행 검출 최소 속도 임계값 (m/s)
-  double speed_threshold_ratio_;      // 과속/저속 판단 비율
-  double min_speed_threshold_;        // 정차 판단 속도 임계값
-  int history_buffer_size_;           // 이력 버퍼 크기
-  double history_timeout_;            // 이력 타임아웃 (초)
-  double position_based_id_grid_size_;  // 위치 기반 ID 그리드 크기 (m)
-  bool use_position_based_tracking_;    // 위치 기반 추적 사용 여부
-  // KMS_251107: 새로 추가된 파라미터 (하드코딩 제거)
-  double nearby_lanelet_threshold_;     // Lanelet 경계 근처 매칭 거리 임계값 (m)
-  int num_nearby_lanelets_;             // 검색할 인근 Lanelet 개수
-
-  // Behavior detection flags
-  bool detect_over_speed_;
-  bool detect_under_speed_;
-  bool detect_abnormal_stop_;
+  struct Parameters
+  {
+    double dist_threshold_for_searching_lanelet;
+    double delta_yaw_threshold_for_searching_lanelet;
+    double wrong_way_angle_threshold;
+    double min_speed_for_wrong_way;
+    double speed_threshold_ratio;
+    double min_speed_threshold;
+    int history_buffer_size;
+    double history_timeout;
+    double position_based_id_grid_size;
+    bool use_position_based_tracking;
+    double nearby_lanelet_threshold;
+    int num_nearby_lanelets;
+    bool detect_over_speed;
+    bool detect_under_speed;
+    bool detect_abnormal_stop;
+  };
+  Parameters params_;
 
   // Per-class wrong-way detection flags
-  bool detect_wrong_way_for_car_;
-  bool detect_wrong_way_for_truck_;
-  bool detect_wrong_way_for_bus_;
-  bool detect_wrong_way_for_trailer_;
-  bool detect_wrong_way_for_motorcycle_;
-  bool detect_wrong_way_for_bicycle_;
-  bool detect_wrong_way_for_pedestrian_;
-  bool detect_wrong_way_for_unknown_;
-
-  // Visualization settings
-  bool use_3d_model_visualization_;  // 3D 모델 vs 직육면체 시각화 선택
+  std::unordered_map<uint8_t, bool> detect_wrong_way_for_class_;
 
   // Class-specific colors (RGBA)
   struct ClassColor {
@@ -249,9 +240,24 @@ private:
   double getSmoothedHeading(const std::string & object_id, double current_yaw);
 
   // Visualization
+  void makeTextMarker(
+    const AbnormalBehaviorInfo & info, const geometry_msgs::msg::Pose & pose,
+    const rclcpp::Time & current_time, int & marker_id,
+    visualization_msgs::msg::MarkerArray & marker_array);
+  void makeVisualMarker(
+    const PredictedObject & object, const ClassColor & color, const rclcpp::Time & current_time,
+    int & marker_id, visualization_msgs::msg::MarkerArray & marker_array);
   visualization_msgs::msg::MarkerArray createDebugMarkers(
     const std::vector<std::pair<PredictedObject, AbnormalBehaviorInfo>> & abnormal_objects,
     const rclcpp::Time & current_time);
+
+private:
+  // Visualization Constants
+  constexpr static double MARKER_LIFETIME = 0.5;
+  constexpr static double TEXT_MARKER_Z_OFFSET = 3.0;
+  constexpr static double TEXT_MARKER_SCALE = 1.0;
+  constexpr static double DEFAULT_VISUAL_SCALE = 2.0;
+  constexpr static double CUBE_ALPHA_MULTIPLIER = 0.5;
 };
 
 }  // namespace abnormal_behavior_detector

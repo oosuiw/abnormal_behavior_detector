@@ -34,40 +34,45 @@ AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOpt
   using std::placeholders::_1;
 
   // Parameters
-  dist_threshold_for_searching_lanelet_ =
+  params_.dist_threshold_for_searching_lanelet =
     declare_parameter<double>("dist_threshold_for_searching_lanelet", 5.0);
-  delta_yaw_threshold_for_searching_lanelet_ =
+  params_.delta_yaw_threshold_for_searching_lanelet =
     declare_parameter<double>("delta_yaw_threshold_for_searching_lanelet", 0.785);  // 45도
-  wrong_way_angle_threshold_ =
+  params_.wrong_way_angle_threshold =
     declare_parameter<double>("wrong_way_angle_threshold", 2.356);  // 135도 (3π/4)
-  min_speed_for_wrong_way_ = declare_parameter<double>("min_speed_for_wrong_way", 2.0);  // m/s
-  speed_threshold_ratio_ = declare_parameter<double>("speed_threshold_ratio", 1.2);
-  min_speed_threshold_ = declare_parameter<double>("min_speed_threshold", 0.5);  // m/s
-  history_buffer_size_ = declare_parameter<int>("history_buffer_size", 10);
-  history_timeout_ = declare_parameter<double>("history_timeout", 3.0);  // seconds
-  position_based_id_grid_size_ = declare_parameter<double>("position_based_id_grid_size", 3.0);  // m
-  use_position_based_tracking_ = declare_parameter<bool>("use_position_based_tracking", true);
-  // KMS_251107: 하드코딩 제거 - 새로운 파라미터 추가
-  nearby_lanelet_threshold_ = declare_parameter<double>("nearby_lanelet_threshold", 5.0);  // m
-  num_nearby_lanelets_ = declare_parameter<int>("num_nearby_lanelets", 10);  // 개수
-
-  // Behavior detection flags
-  detect_over_speed_ = declare_parameter<bool>("detect_over_speed", false);
-  detect_under_speed_ = declare_parameter<bool>("detect_under_speed", false);
-  detect_abnormal_stop_ = declare_parameter<bool>("detect_abnormal_stop", false);
+  params_.min_speed_for_wrong_way = declare_parameter<double>("min_speed_for_wrong_way", 2.0);  // m/s
+  params_.speed_threshold_ratio = declare_parameter<double>("speed_threshold_ratio", 1.2);
+  params_.min_speed_threshold = declare_parameter<double>("min_speed_threshold", 0.5);  // m/s
+  params_.history_buffer_size = declare_parameter<int>("history_buffer_size", 10);
+  params_.history_timeout = declare_parameter<double>("history_timeout", 3.0);  // seconds
+  params_.position_based_id_grid_size = declare_parameter<double>("position_based_id_grid_size", 3.0);  // m
+  params_.use_position_based_tracking = declare_parameter<bool>("use_position_based_tracking", true);
+  params_.nearby_lanelet_threshold = declare_parameter<double>("nearby_lanelet_threshold", 5.0);  // m
+  params_.num_nearby_lanelets = declare_parameter<int>("num_nearby_lanelets", 10);  // 개수
+  params_.detect_over_speed = declare_parameter<bool>("detect_over_speed", false);
+  params_.detect_under_speed = declare_parameter<bool>("detect_under_speed", false);
+  params_.detect_abnormal_stop = declare_parameter<bool>("detect_abnormal_stop", false);
 
   // Per-class wrong-way detection flags
-  detect_wrong_way_for_car_ = declare_parameter<bool>("detect_wrong_way_for_car", true);
-  detect_wrong_way_for_truck_ = declare_parameter<bool>("detect_wrong_way_for_truck", true);
-  detect_wrong_way_for_bus_ = declare_parameter<bool>("detect_wrong_way_for_bus", true);
-  detect_wrong_way_for_trailer_ = declare_parameter<bool>("detect_wrong_way_for_trailer", true);
-  detect_wrong_way_for_motorcycle_ = declare_parameter<bool>("detect_wrong_way_for_motorcycle", true);
-  detect_wrong_way_for_bicycle_ = declare_parameter<bool>("detect_wrong_way_for_bicycle", false);
-  detect_wrong_way_for_pedestrian_ = declare_parameter<bool>("detect_wrong_way_for_pedestrian", false);
-  detect_wrong_way_for_unknown_ = declare_parameter<bool>("detect_wrong_way_for_unknown", false);
+  {
+    using autoware_auto_perception_msgs::msg::ObjectClassification;
+    const std::vector<std::pair<std::string, uint8_t>> class_definitions = {
+      {"car", ObjectClassification::CAR},
+      {"truck", ObjectClassification::TRUCK},
+      {"bus", ObjectClassification::BUS},
+      {"trailer", ObjectClassification::TRAILER},
+      {"motorcycle", ObjectClassification::MOTORCYCLE},
+      {"bicycle", ObjectClassification::BICYCLE},
+      {"pedestrian", ObjectClassification::PEDESTRIAN},
+      {"unknown", ObjectClassification::UNKNOWN}};
 
-  // Visualization settings
-  use_3d_model_visualization_ = declare_parameter<bool>("use_3d_model_visualization", true);
+    for (const auto & class_def : class_definitions) {
+      const std::string param_name = "detect_wrong_way_for_" + class_def.first;
+      // By default, enable for vehicles and disable for vulnerable road users
+      const bool is_vehicle = (class_def.second >= 1 && class_def.second <= 5);
+      detect_wrong_way_for_class_[class_def.second] = declare_parameter<bool>(param_name, is_vehicle);
+    }
+  }
 
   // Class-specific colors (Hex 형식: "#RRGGBB" 또는 "#RRGGBBAA")
   auto parse_hex_color = [](const std::string & hex_str, ClassColor & color,
@@ -271,7 +276,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   AbnormalBehaviorInfo info;
 
   // 위치 기반 추적 사용 시 stable ID 생성, 아니면 UUID 사용
-  if (use_position_based_tracking_) {
+  if (params_.use_position_based_tracking) {
     info.object_id = getStableObjectId(object);
   } else {
     info.object_id = uuidToString(object.object_id);
@@ -317,7 +322,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   if (closest_lanelet_opt) {
     // findClosestLanelet()의 nearby 결과 재사용
     const auto nearby_lanelets = lanelet::geometry::findNearest(
-      lanelet_map_ptr_->laneletLayer, search_point, num_nearby_lanelets_);
+      lanelet_map_ptr_->laneletLayer, search_point, params_.num_nearby_lanelets);
 
     for (const auto & [dist, ll] : nearby_lanelets) {
       if (lanelet::geometry::inside(ll, search_point)) {
@@ -363,7 +368,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   }
 
   // 2. 비정상 정차 검출
-  if (detect_abnormal_stop_ && isAbnormalStop(object, lanelet)) {
+  if (params_.detect_abnormal_stop && isAbnormalStop(object, lanelet)) {
     info.type = AbnormalBehaviorType::ABNORMAL_STOP;
     info.confidence = 0.8;
     info.description = "Abnormal stop detected";
@@ -374,7 +379,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   }
 
   // 3. 과속 검출
-  if (detect_over_speed_ && isOverSpeeding(object, lanelet)) {
+  if (params_.detect_over_speed && isOverSpeeding(object, lanelet)) {
     info.type = AbnormalBehaviorType::OVER_SPEED;
     info.confidence = 0.7;
     info.description = "Over-speeding detected";
@@ -385,7 +390,7 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   }
 
   // 4. 저속 검출
-  if (detect_under_speed_ && isUnderSpeeding(object, lanelet)) {
+  if (params_.detect_under_speed && isUnderSpeeding(object, lanelet)) {
     info.type = AbnormalBehaviorType::UNDER_SPEED;
     info.confidence = 0.6;
     info.description = "Under-speeding detected";
@@ -412,24 +417,19 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
   // 클래스별 검출 활성화 체크
   if (!object.classification.empty()) {
     const uint8_t label = object.classification[0].label;
-    constexpr uint8_t UNKNOWN = 0, CAR = 1, TRUCK = 2, BUS = 3, TRAILER = 4, MOTORCYCLE = 5, BICYCLE = 6, PEDESTRIAN = 7;
-    switch (label) {
-      case CAR: if (!detect_wrong_way_for_car_) return false; break;
-      case TRUCK: if (!detect_wrong_way_for_truck_) return false; break;
-      case BUS: if (!detect_wrong_way_for_bus_) return false; break;
-      case TRAILER: if (!detect_wrong_way_for_trailer_) return false; break;
-      case MOTORCYCLE: if (!detect_wrong_way_for_motorcycle_) return false; break;
-      case BICYCLE: if (!detect_wrong_way_for_bicycle_) return false; break;
-      case PEDESTRIAN: if (!detect_wrong_way_for_pedestrian_) return false; break;
-      case UNKNOWN: default: if (!detect_wrong_way_for_unknown_) return false; break;
+    if (detect_wrong_way_for_class_.count(label) && !detect_wrong_way_for_class_.at(label)) {
+      return false;
     }
   } else {
-    if (!detect_wrong_way_for_unknown_) return false;
+    // classification이 비어있으면 unknown으로 간주
+    if (detect_wrong_way_for_class_.count(0) && !detect_wrong_way_for_class_.at(0)) {
+      return false;
+    }
   }
 
   // 속도 체크
   const double object_speed = getObjectSpeed(object);
-  if (object_speed < min_speed_for_wrong_way_) {
+  if (object_speed < params_.min_speed_for_wrong_way) {
     return false;
   }
 
@@ -455,7 +455,7 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
   const auto lanelet_direction =
     getLaneletDirectionVector(matched_lanelet, object.kinematics.initial_pose_with_covariance.pose.position);
   const double dot_product = object_direction_vec.dot(lanelet_direction);
-  const double cos_threshold = std::cos(wrong_way_angle_threshold_);
+  const double cos_threshold = std::cos(params_.wrong_way_angle_threshold);
 
   // Debug info 채우기
   debug_info.object_heading_vector.x = object_direction_vec.x();
@@ -464,7 +464,7 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
   debug_info.lanelet_direction_vector.y = lanelet_direction.y();
   debug_info.dot_product = dot_product;
   debug_info.angle_diff_deg = std::acos(std::clamp(dot_product, -1.0, 1.0)) * 180.0 / M_PI;
-  debug_info.wrong_way_threshold_deg = wrong_way_angle_threshold_ * 180.0 / M_PI;
+  debug_info.wrong_way_threshold_deg = params_.wrong_way_angle_threshold * 180.0 / M_PI;
 
   // 헤딩만으로 역주행이 아니라고 판단되면, 빠르게 정상으로 결론
   if (dot_product >= cos_threshold) {
@@ -533,7 +533,7 @@ bool AbnormalBehaviorDetectorNode::isOverSpeeding(
   }
 
   const double speed_limit = speed_limit_opt.get();
-  return object_speed > speed_limit * speed_threshold_ratio_;
+  return object_speed > speed_limit * params_.speed_threshold_ratio;
 }
 
 bool AbnormalBehaviorDetectorNode::isUnderSpeeding(
@@ -549,7 +549,7 @@ bool AbnormalBehaviorDetectorNode::isUnderSpeeding(
   const double speed_limit = speed_limit_opt.get();
   const double min_acceptable_speed = speed_limit * 0.3;  // 제한 속도의 30% 미만
 
-  return object_speed > min_speed_threshold_ && object_speed < min_acceptable_speed;
+  return object_speed > params_.min_speed_threshold && object_speed < min_acceptable_speed;
 }
 
 bool AbnormalBehaviorDetectorNode::isAbnormalStop(
@@ -558,7 +558,7 @@ bool AbnormalBehaviorDetectorNode::isAbnormalStop(
   const double object_speed = getObjectSpeed(object);
 
   // 정차 판단
-  if (object_speed > min_speed_threshold_) {
+  if (object_speed > params_.min_speed_threshold) {
     return false;  // 움직이고 있으면 정차 아님
   }
 
@@ -581,7 +581,7 @@ boost::optional<lanelet::ConstLanelet> AbnormalBehaviorDetectorNode::findClosest
   // KMS_251107: 1단계 - 먼저 가까운 lanelet들만 가져오기 (성능 최적화)
   // 전체 맵을 순회하는 대신 가까운 것들만 검색
   const auto nearby_lanelets = lanelet::geometry::findNearest(
-    lanelet_map_ptr_->laneletLayer, search_point, num_nearby_lanelets_);
+    lanelet_map_ptr_->laneletLayer, search_point, params_.num_nearby_lanelets);
 
   if (nearby_lanelets.empty()) {
     return boost::none;
@@ -599,7 +599,7 @@ boost::optional<lanelet::ConstLanelet> AbnormalBehaviorDetectorNode::findClosest
   // (차선 경계에 걸쳐 있는 경우 대비)
   for (const auto & [dist, lanelet] : nearby_lanelets) {
     // KMS_251107: 거리 체크 - 파라미터 사용 (하드코딩 제거)
-    if (dist > nearby_lanelet_threshold_) {
+    if (dist > params_.nearby_lanelet_threshold) {
       continue;
     }
 
@@ -615,7 +615,7 @@ boost::optional<lanelet::ConstLanelet> AbnormalBehaviorDetectorNode::findClosest
     // 이는 역주행 차량도 올바른 lanelet과 매칭되도록 함
     const double normalized_angle = std::min(angle_diff, M_PI - angle_diff);
 
-    if (normalized_angle < delta_yaw_threshold_for_searching_lanelet_) {
+    if (normalized_angle < params_.delta_yaw_threshold_for_searching_lanelet) {
       return lanelet;
     }
   }
@@ -784,7 +784,7 @@ void AbnormalBehaviorDetectorNode::cleanupOldHistory(const rclcpp::Time & curren
 
       const double elapsed = (current_time - it->second.last_update_time).seconds();
 
-      if (elapsed > history_timeout_) {
+      if (elapsed > params_.history_timeout) {
 
         it = object_history_.erase(it);
 
@@ -826,8 +826,8 @@ std::string AbnormalBehaviorDetectorNode::getStableObjectId(const PredictedObjec
 
   // 위치를 grid_size 단위로 양자화하여 stable ID 생성
   // 예: grid_size=3.0m → (11615.82, 90913.39) → (3871, 30304)
-  const int grid_x = static_cast<int>(std::round(pos.x / position_based_id_grid_size_));
-  const int grid_y = static_cast<int>(std::round(pos.y / position_based_id_grid_size_));
+  const int grid_x = static_cast<int>(std::round(pos.x / params_.position_based_id_grid_size));
+  const int grid_y = static_cast<int>(std::round(pos.y / params_.position_based_id_grid_size));
 
   // "grid_X_Y" 형식으로 ID 생성
   std::stringstream ss;
@@ -844,7 +844,33 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
   int marker_id = 0;
 
   for (const auto & [object, info] : abnormal_objects) {
-    // 텍스트 마커
+    // 클래스별 색상 결정
+    ClassColor selected_color = color_default_;
+    if (!object.classification.empty()) {
+      const uint8_t label = object.classification[0].label;
+      switch (label) {
+        case 1: selected_color = color_car_; break;
+        case 2: selected_color = color_truck_; break;
+        case 3: selected_color = color_bus_; break;
+        case 5: selected_color = color_motorcycle_; break;
+        case 6: selected_color = color_bicycle_; break;
+        case 7: selected_color = color_pedestrian_; break;
+        default: selected_color = color_default_; break;
+      }
+    }
+
+    makeTextMarker(info, object.kinematics.initial_pose_with_covariance.pose, current_time, marker_id, marker_array);
+    makeVisualMarker(object, selected_color, current_time, marker_id, marker_array);
+  }
+
+  return marker_array;
+}
+
+void AbnormalBehaviorDetectorNode::makeTextMarker(
+  const AbnormalBehaviorInfo & info, const geometry_msgs::msg::Pose & pose,
+  const rclcpp::Time & current_time, int & marker_id,
+  visualization_msgs::msg::MarkerArray & marker_array)
+{
     visualization_msgs::msg::Marker text_marker;
     text_marker.header.frame_id = "map";
     text_marker.header.stamp = current_time;
@@ -853,182 +879,54 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
     text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
     text_marker.action = visualization_msgs::msg::Marker::ADD;
 
-    text_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
-    text_marker.pose.position.z += 3.0;  // 객체 위 3m
+    text_marker.pose = pose;
+    text_marker.pose.position.z += TEXT_MARKER_Z_OFFSET;
 
-    text_marker.scale.z = 1.0;
+    text_marker.scale.z = TEXT_MARKER_SCALE;
     text_marker.color.r = 1.0;
     text_marker.color.g = 0.0;
     text_marker.color.b = 0.0;
     text_marker.color.a = 1.0;
 
     text_marker.text = info.description;
-    text_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+    text_marker.lifetime = rclcpp::Duration::from_seconds(MARKER_LIFETIME);
 
     marker_array.markers.push_back(text_marker);
+}
 
-    // KMS_251113: 시각화 마커 (파라미터에 따라 3D 모델 또는 직육면체)
+void AbnormalBehaviorDetectorNode::makeVisualMarker(
+  const PredictedObject & object, const ClassColor & color, const rclcpp::Time & current_time,
+  int & marker_id, visualization_msgs::msg::MarkerArray & marker_array)
+{
     visualization_msgs::msg::Marker visual_marker;
-    visual_marker.header = text_marker.header;
+    visual_marker.header.frame_id = "map";
+    visual_marker.header.stamp = current_time;
     visual_marker.ns = "abnormal_behavior_visual";
     visual_marker.id = marker_id++;
     visual_marker.action = visualization_msgs::msg::Marker::ADD;
-    visual_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+    visual_marker.lifetime = rclcpp::Duration::from_seconds(MARKER_LIFETIME);
 
-    if (use_3d_model_visualization_) {
-      // ========== 3D 모델 시각화 ==========
-      visual_marker.type = visualization_msgs::msg::Marker::MESH_RESOURCE;
-      visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
+    // CUBE 시각화
+    visual_marker.type = visualization_msgs::msg::Marker::CUBE;
+    visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
 
-      // 클래스별 모델 및 실제 제원 선택
-      std::string model_path = "package://abnormal_behavior_detector/models/car.obj";
-      double model_base_length = 4.45;   // 기본값: 프리우스 2세대 길이 (m)
-      double model_base_width = 1.725;   // 기본값: 프리우스 2세대 폭 (m)
-      double model_base_height = 1.49;   // 기본값: 프리우스 2세대 높이 (m)
-
-      if (!object.classification.empty()) {
-        const uint8_t label = object.classification[0].label;
-        switch (label) {
-          case 1:  // CAR
-            model_path = "package://abnormal_behavior_detector/models/car.obj";
-            model_base_length = 4.45;
-            model_base_width = 1.725;
-            model_base_height = 1.49;
-            break;
-          case 2:  // TRUCK
-            model_path = "package://abnormal_behavior_detector/models/truck.obj";
-            model_base_length = 6.0;
-            model_base_width = 2.0;
-            model_base_height = 1.9;
-            break;
-          case 3:  // BUS
-            model_path = "package://abnormal_behavior_detector/models/bus.obj";
-            model_base_length = 12.0;
-            model_base_width = 2.55;
-            model_base_height = 3.0;
-            break;
-          case 5:  // MOTORCYCLE
-            model_path = "package://abnormal_behavior_detector/models/motorcycle.obj";
-            model_base_length = 2.2;
-            model_base_width = 0.8;
-            model_base_height = 1.2;
-            break;
-          case 6:  // BICYCLE
-            model_path = "package://abnormal_behavior_detector/models/bicycle.obj";
-            model_base_length = 1.75;
-            model_base_width = 0.5;
-            model_base_height = 1.0;
-            break;
-          case 7:  // PEDESTRIAN
-            model_path = "package://abnormal_behavior_detector/models/pedestrian.obj";
-            model_base_length = 0.5;
-            model_base_width = 0.47;
-            model_base_height = 1.7;
-            break;
-          default:
-            model_path = "package://abnormal_behavior_detector/models/car.obj";
-            model_base_length = 4.45;
-            model_base_width = 1.725;
-            model_base_height = 1.49;
-        }
-      }
-
-      visual_marker.mesh_resource = model_path;
-      visual_marker.mesh_use_embedded_materials = false;  // 색상을 직접 지정
-
-      // 반시계방향 90도 회전 (Z축 기준) - 모든 모델에 적용
-      tf2::Quaternion rotation;
-      rotation.setRPY(0, 0, M_PI / 2.0);  // 90도 = π/2 rad
-
-      // 기존 orientation과 합성
-      tf2::Quaternion original_orientation;
-      tf2::fromMsg(object.kinematics.initial_pose_with_covariance.pose.orientation, original_orientation);
-
-      tf2::Quaternion combined_orientation = original_orientation * rotation;
-      visual_marker.pose.orientation = tf2::toMsg(combined_orientation);
-
-      // 객체의 실제 크기(shape)에 맞춰 스케일 조정 (100배 축소)
-      double scale_x = 0.01;  // 100배 축소
-      double scale_y = 0.01;
-      double scale_z = 0.01;
-
-      if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
-        const double object_length = object.shape.dimensions.x;
-        const double object_width = object.shape.dimensions.y;
-        const double object_height = object.shape.dimensions.z;
-
-        if (model_base_length > 0.01 && model_base_width > 0.01 && model_base_height > 0.01) {
-          scale_x = (object_length / model_base_length) * 0.01;
-          scale_y = (object_width / model_base_width) * 0.01;
-          scale_z = (object_height / model_base_height) * 0.01;
-        }
-      }
-
-      visual_marker.scale.x = scale_x;
-      visual_marker.scale.y = scale_y;
-      visual_marker.scale.z = scale_z;
-
-      // 클래스별 색상 적용
-      ClassColor selected_color = color_default_;
-      if (!object.classification.empty()) {
-        const uint8_t label = object.classification[0].label;
-        switch (label) {
-          case 1: selected_color = color_car_; break;
-          case 2: selected_color = color_truck_; break;
-          case 3: selected_color = color_bus_; break;
-          case 5: selected_color = color_motorcycle_; break;
-          case 6: selected_color = color_bicycle_; break;
-          case 7: selected_color = color_pedestrian_; break;
-          default: selected_color = color_default_; break;
-        }
-      }
-
-      visual_marker.color.r = selected_color.r;
-      visual_marker.color.g = selected_color.g;
-      visual_marker.color.b = selected_color.b;
-      visual_marker.color.a = selected_color.a;
-
+    // 객체의 실제 크기 사용
+    if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
+      visual_marker.scale.x = object.shape.dimensions.x;
+      visual_marker.scale.y = object.shape.dimensions.y;
+      visual_marker.scale.z = object.shape.dimensions.z;
     } else {
-      // ========== 직육면체(CUBE) 시각화 (기존 방식) ==========
-      visual_marker.type = visualization_msgs::msg::Marker::CUBE;
-      visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
-
-      // 객체의 실제 크기 사용
-      if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
-        visual_marker.scale.x = object.shape.dimensions.x;
-        visual_marker.scale.y = object.shape.dimensions.y;
-        visual_marker.scale.z = object.shape.dimensions.z;
-      } else {
-        visual_marker.scale.x = 2.0;
-        visual_marker.scale.y = 2.0;
-        visual_marker.scale.z = 2.0;
-      }
-
-      // 클래스별 색상 적용 (직육면체도 동일)
-      ClassColor selected_color = color_default_;
-      if (!object.classification.empty()) {
-        const uint8_t label = object.classification[0].label;
-        switch (label) {
-          case 1: selected_color = color_car_; break;
-          case 2: selected_color = color_truck_; break;
-          case 3: selected_color = color_bus_; break;
-          case 5: selected_color = color_motorcycle_; break;
-          case 6: selected_color = color_bicycle_; break;
-          case 7: selected_color = color_pedestrian_; break;
-          default: selected_color = color_default_; break;
-        }
-      }
-
-      visual_marker.color.r = selected_color.r;
-      visual_marker.color.g = selected_color.g;
-      visual_marker.color.b = selected_color.b;
-      visual_marker.color.a = selected_color.a * 0.5;  // 직육면체는 50% 투명도
+      visual_marker.scale.x = DEFAULT_VISUAL_SCALE;
+      visual_marker.scale.y = DEFAULT_VISUAL_SCALE;
+      visual_marker.scale.z = DEFAULT_VISUAL_SCALE;
     }
 
-    marker_array.markers.push_back(visual_marker);
-  }
+    visual_marker.color.r = color.r;
+    visual_marker.color.g = color.g;
+    visual_marker.color.b = color.b;
+    visual_marker.color.a = color.a * CUBE_ALPHA_MULTIPLIER;
 
-  return marker_array;
+    marker_array.markers.push_back(visual_marker);
 }
 
 // KMS_251113: Heading 안정화 함수 (보행자 오검출 방지)
