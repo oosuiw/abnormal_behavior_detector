@@ -5,7 +5,7 @@
   <version>1.0.0</version>
   <description>이상 거동 검출 노드 - 원형 교차로에서 역주행 등 이상 행동을 하는 차량 검출</description>
 
-  <maintainer email="your_email@example.com">Your Name</maintainer>
+  <maintainer email="msmw1023@chosun.kr">Minsoo Kim</maintainer>
   <license>Apache License 2.0</license>
 
   <buildtool_depend>ament_cmake_auto</buildtool_depend>
