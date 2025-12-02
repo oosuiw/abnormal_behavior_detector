@@ -40,7 +40,6 @@ AbnormalBehaviorDetectorNode::AbnormalBehaviorDetectorNode(const rclcpp::NodeOpt
     declare_parameter<double>("delta_yaw_threshold_for_searching_lanelet", 0.785);  // 45도
   wrong_way_angle_threshold_ =
     declare_parameter<double>("wrong_way_angle_threshold", 2.356);  // 135도 (3π/4)
-  consecutive_count_threshold_ = declare_parameter<int>("consecutive_count_threshold", 3);
   min_speed_for_wrong_way_ = declare_parameter<double>("min_speed_for_wrong_way", 2.0);  // m/s
   speed_threshold_ratio_ = declare_parameter<double>("speed_threshold_ratio", 1.2);
   min_speed_threshold_ = declare_parameter<double>("min_speed_threshold", 0.5);  // m/s
@@ -282,6 +281,9 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
   info.confidence = 0.0;
   info.description = "Normal";
 
+  // Update history for heading smoothing and cleanup
+  updateObjectHistory(info.object_id, current_time);
+
   const auto & pos = object.kinematics.initial_pose_with_covariance.pose.position;
   const double raw_yaw = tf2::getYaw(object.kinematics.initial_pose_with_covariance.pose.orientation);
 
@@ -351,31 +353,13 @@ AbnormalBehaviorInfo AbnormalBehaviorDetectorNode::detectAbnormalBehavior(
 
   // 1. 역주행 검출 (우선순위 최상위)
   if (isWrongWayDriving(object, lanelet, debug_info)) {
-    updateObjectHistory(info.object_id, AbnormalBehaviorType::WRONG_WAY, current_time);
-
-    const auto it = object_history_.find(info.object_id);
-    const int count = (it != object_history_.end()) ? it->second.consecutive_wrong_way_count : 0;
-
-    debug_info.consecutive_count = count;
-    debug_info.is_confirmed = (count >= consecutive_count_threshold_);
-
-    if (isAbnormalBehaviorConfirmed(info.object_id, AbnormalBehaviorType::WRONG_WAY)) {
-      info.type = AbnormalBehaviorType::WRONG_WAY;
-      info.confidence = 0.95;
-      info.description = "Wrong-way";
-      debug_info.behavior_type = "WRONG_WAY";
-      debug_info.confidence = 0.95;
-      debug_info.description = "Wrong-way driving detected";
-      return info;
-    }
-
-    // 역주행이 감지되었지만 아직 확정되지 않은 경우, 카운터가 리셋되지 않도록 여기서 반환
-    debug_info.behavior_type = "POTENTIAL_WRONG_WAY";
-    debug_info.description = "Potential wrong-way, accumulating count.";
+    info.type = AbnormalBehaviorType::WRONG_WAY;
+    info.confidence = 0.95;
+    info.description = "Wrong-way";
+    debug_info.behavior_type = "WRONG_WAY";
+    debug_info.confidence = 0.95;
+    debug_info.description = "Wrong-way driving detected (Heading and Path Confirmed)";
     return info;
-  } else {
-    // 역주행이 아니므로 카운터를 리셋
-    updateObjectHistory(info.object_id, AbnormalBehaviorType::NORMAL, current_time);
   }
 
   // 2. 비정상 정차 검출
@@ -428,114 +412,114 @@ bool AbnormalBehaviorDetectorNode::isWrongWayDriving(
   // 클래스별 검출 활성화 체크
   if (!object.classification.empty()) {
     const uint8_t label = object.classification[0].label;
-
-    // ObjectClassification constants
-    constexpr uint8_t UNKNOWN = 0;
-    constexpr uint8_t CAR = 1;
-    constexpr uint8_t TRUCK = 2;
-    constexpr uint8_t BUS = 3;
-    constexpr uint8_t TRAILER = 4;
-    constexpr uint8_t MOTORCYCLE = 5;
-    constexpr uint8_t BICYCLE = 6;
-    constexpr uint8_t PEDESTRIAN = 7;
-
-    // 클래스별로 검출 비활성화된 경우 스킵
+    constexpr uint8_t UNKNOWN = 0, CAR = 1, TRUCK = 2, BUS = 3, TRAILER = 4, MOTORCYCLE = 5, BICYCLE = 6, PEDESTRIAN = 7;
     switch (label) {
-      case CAR:
-        if (!detect_wrong_way_for_car_) return false;
-        break;
-      case TRUCK:
-        if (!detect_wrong_way_for_truck_) return false;
-        break;
-      case BUS:
-        if (!detect_wrong_way_for_bus_) return false;
-        break;
-      case TRAILER:
-        if (!detect_wrong_way_for_trailer_) return false;
-        break;
-      case MOTORCYCLE:
-        if (!detect_wrong_way_for_motorcycle_) return false;
-        break;
-      case BICYCLE:
-        if (!detect_wrong_way_for_bicycle_) return false;
-        break;
-      case PEDESTRIAN:
-        if (!detect_wrong_way_for_pedestrian_) return false;
-        break;
-      case UNKNOWN:
-      default:
-        if (!detect_wrong_way_for_unknown_) return false;
-        break;
+      case CAR: if (!detect_wrong_way_for_car_) return false; break;
+      case TRUCK: if (!detect_wrong_way_for_truck_) return false; break;
+      case BUS: if (!detect_wrong_way_for_bus_) return false; break;
+      case TRAILER: if (!detect_wrong_way_for_trailer_) return false; break;
+      case MOTORCYCLE: if (!detect_wrong_way_for_motorcycle_) return false; break;
+      case BICYCLE: if (!detect_wrong_way_for_bicycle_) return false; break;
+      case PEDESTRIAN: if (!detect_wrong_way_for_pedestrian_) return false; break;
+      case UNKNOWN: default: if (!detect_wrong_way_for_unknown_) return false; break;
     }
   } else {
-    // classification이 없는 경우 unknown으로 처리
     if (!detect_wrong_way_for_unknown_) return false;
   }
 
-  // 속도 체크 - 저속 객체(보행자 등)는 역주행 검출에서 제외
+  // 속도 체크
   const double object_speed = getObjectSpeed(object);
   if (object_speed < min_speed_for_wrong_way_) {
-    return false;  // 너무 느리면 역주행 검출 제외 (보행자 오검출 방지)
+    return false;
   }
 
-  // KMS_251113: 보행자는 velocity 기반 방향 판단 (heading이 부정확함)
+  // =================================================================
+  // 1. 헤딩/속도 기반 1차 검사
+  // =================================================================
+  Eigen::Vector2d object_direction_vec;
   constexpr uint8_t PEDESTRIAN = 7;
-  Eigen::Vector2d object_heading;
-
   if (!object.classification.empty() && object.classification[0].label == PEDESTRIAN) {
-    // 보행자: velocity 방향 사용 (heading보다 정확)
+    // 보행자: velocity 방향 사용
     const auto & twist = object.kinematics.initial_twist_with_covariance.twist;
-    const double vx_local = twist.linear.x;
-    const double vy_local = twist.linear.y;
-
-    if (std::abs(vx_local) < 0.1 && std::abs(vy_local) < 0.1) {
-      // 속도가 거의 없으면 방향 판단 불가
-      return false;
-    }
-
-    // KMS_251113: Velocity를 월드 좌표계로 변환
-    // twist.linear는 로컬 좌표계 (객체의 heading 기준)
+    if (std::hypot(twist.linear.x, twist.linear.y) < 0.1) return false; // 속도가 거의 없으면 방향 판단 불가
     const double yaw = tf2::getYaw(object.kinematics.initial_pose_with_covariance.pose.orientation);
-    const double cos_yaw = std::cos(yaw);
-    const double sin_yaw = std::sin(yaw);
-
-    // 회전 변환: (vx_local, vy_local) -> (vx_world, vy_world)
-    const double vx_world = vx_local * cos_yaw - vy_local * sin_yaw;
-    const double vy_world = vx_local * sin_yaw + vy_local * cos_yaw;
-
-    object_heading = Eigen::Vector2d(vx_world, vy_world).normalized();
+    object_direction_vec = Eigen::Vector2d(
+      twist.linear.x * std::cos(yaw) - twist.linear.y * std::sin(yaw),
+      twist.linear.x * std::sin(yaw) + twist.linear.y * std::cos(yaw));
+    object_direction_vec.normalize();
   } else {
-    // 차량: heading 방향 사용 (기존 방식)
-    object_heading = getObjectHeadingVector(object);
+    // 차량: heading 방향 사용
+    object_direction_vec = getObjectHeadingVector(object);
   }
 
-  // 차선의 방향 벡터 (단위 벡터)
   const auto lanelet_direction =
     getLaneletDirectionVector(matched_lanelet, object.kinematics.initial_pose_with_covariance.pose.position);
-
-  // 내적 계산 (두 벡터가 단위 벡터이므로 바로 cos(θ))
-  const double dot_product = object_heading.dot(lanelet_direction);
-
-  // 각도 계산
-  const double angle_rad = std::acos(std::clamp(dot_product, -1.0, 1.0));
-  const double angle_deg = angle_rad * 180.0 / M_PI;
+  const double dot_product = object_direction_vec.dot(lanelet_direction);
   const double cos_threshold = std::cos(wrong_way_angle_threshold_);
 
-  // Debug info에 정보 채우기
-  debug_info.object_heading_vector.x = object_heading.x();
-  debug_info.object_heading_vector.y = object_heading.y();
-  debug_info.object_heading_vector.z = 0.0;
+  // Debug info 채우기
+  debug_info.object_heading_vector.x = object_direction_vec.x();
+  debug_info.object_heading_vector.y = object_direction_vec.y();
   debug_info.lanelet_direction_vector.x = lanelet_direction.x();
   debug_info.lanelet_direction_vector.y = lanelet_direction.y();
-  debug_info.lanelet_direction_vector.z = 0.0;
   debug_info.dot_product = dot_product;
-  debug_info.angle_diff_deg = angle_deg;
+  debug_info.angle_diff_deg = std::acos(std::clamp(dot_product, -1.0, 1.0)) * 180.0 / M_PI;
   debug_info.wrong_way_threshold_deg = wrong_way_angle_threshold_ * 180.0 / M_PI;
 
-  // 각도가 임계값보다 크면 역주행
-  const bool is_wrong_way = dot_product < cos_threshold;
+  // 헤딩만으로 역주행이 아니라고 판단되면, 빠르게 정상으로 결론
+  if (dot_product >= cos_threshold) {
+    debug_info.description = "Normal (heading check passed)";
+    return false;
+  }
 
-  return is_wrong_way;
+  // =================================================================
+  // 2. 예측 경로 기반 2차 검사 (하이브리드 로직)
+  // =================================================================
+  const auto & predicted_paths = object.kinematics.predicted_paths;
+  if (predicted_paths.empty()) {
+    debug_info.description = "Potential Wrong-way (heading), but no predicted path to confirm.";
+    return false; // 예측 경로가 없으면 확정 불가
+  }
+
+  const auto & most_confident_path = *std::max_element(
+    predicted_paths.begin(), predicted_paths.end(),
+    [](const auto & a, const auto & b) { return a.confidence < b.confidence; });
+
+  if (most_confident_path.path.size() < 2) {
+    debug_info.description = "Potential Wrong-way (heading), but path is too short to analyze.";
+    return false; // 경로가 너무 짧으면 확정 불가
+  }
+
+  // 경로의 중간 지점과 끝 지점을 샘플링하여 검사
+  const size_t mid_idx = most_confident_path.path.size() / 2;
+  const size_t end_idx = most_confident_path.path.size() - 1;
+  std::vector<size_t> check_indices;
+  if (mid_idx > 0) check_indices.push_back(mid_idx);
+  if (end_idx > 0 && end_idx != mid_idx) check_indices.push_back(end_idx);
+
+  for (const size_t & idx : check_indices) {
+    const auto & future_pose = most_confident_path.path[idx];
+    const auto & prev_pose = most_confident_path.path[idx-1];
+
+    Eigen::Vector2d path_segment_direction(
+      future_pose.position.x - prev_pose.position.x,
+      future_pose.position.y - prev_pose.position.y
+    );
+
+    if (path_segment_direction.norm() < 1e-6) continue; // 매우 짧은 세그먼트는 스킵
+    path_segment_direction.normalize();
+
+    const auto future_lanelet_direction = getLaneletDirectionVector(matched_lanelet, future_pose.position);
+    const double path_dot_product = path_segment_direction.dot(future_lanelet_direction);
+
+    if (path_dot_product >= cos_threshold) {
+       debug_info.description = "Potential Wrong-way (heading), but predicted path is normal.";
+       return false;
+    }
+  }
+
+  // 헤딩과 예측 경로 모두 역주행을 가리키면 최종 확정
+  return true;
 }
 
 bool AbnormalBehaviorDetectorNode::isOverSpeeding(
@@ -721,89 +705,111 @@ Eigen::Vector2d AbnormalBehaviorDetectorNode::getLaneletDirectionVector(
 }
 
 double AbnormalBehaviorDetectorNode::getObjectSpeed(const PredictedObject & object)
+
 {
+
   const auto & twist = object.kinematics.initial_twist_with_covariance.twist;
+
   return std::sqrt(twist.linear.x * twist.linear.x + twist.linear.y * twist.linear.y);
+
 }
+
+
 
 boost::optional<double> AbnormalBehaviorDetectorNode::getLaneletSpeedLimit(
+
   const lanelet::ConstLanelet & lanelet)
+
 {
+
   // Lanelet의 속성에서 speed_limit 태그 확인
+
   const auto speed_limit_attr = lanelet.attributeOr("speed_limit", "none");
+
   const std::string none_str = "none";
 
+
+
   if (speed_limit_attr != none_str) {
+
     try {
+
       // km/h를 m/s로 변환
+
       const double speed_kmh = std::stod(speed_limit_attr);
+
       return speed_kmh / 3.6;  // km/h -> m/s
+
     } catch (const std::exception &) {
+
       // 변환 실패 시 기본값
+
     }
+
   }
+
+
 
   // 기본 제한 속도 (60 km/h = 16.67 m/s)
+
   return 16.67;
+
 }
+
+
 
 void AbnormalBehaviorDetectorNode::updateObjectHistory(
-  const std::string & object_id, AbnormalBehaviorType behavior_type,
-  const rclcpp::Time & current_time)
+
+  const std::string & object_id, const rclcpp::Time & current_time)
+
 {
+
   auto & history = object_history_[object_id];
+
   history.object_id = object_id;
+
   history.last_update_time = current_time;
 
-  // 이력 추가
-  history.history.push_back(behavior_type);
-  if (history.history.size() > static_cast<size_t>(history_buffer_size_)) {
-    history.history.erase(history.history.begin());
-  }
-
-  // 연속 역주행 카운트 업데이트
-  if (behavior_type == AbnormalBehaviorType::WRONG_WAY) {
-    history.consecutive_wrong_way_count++;
-  } else {
-    history.consecutive_wrong_way_count = 0;
-  }
 }
+
+
 
 void AbnormalBehaviorDetectorNode::cleanupOldHistory(const rclcpp::Time & current_time)
+
 {
+
   for (auto it = object_history_.begin(); it != object_history_.end();) {
+
     try {
-      // KMS_251113: Time source가 다를 수 있으므로 try-catch로 보호
+
       const double elapsed = (current_time - it->second.last_update_time).seconds();
+
       if (elapsed > history_timeout_) {
+
         it = object_history_.erase(it);
+
       } else {
+
         ++it;
+
       }
+
     } catch (const std::runtime_error & e) {
-      // Time source가 달라서 빼기 실패 → 이 객체는 이전 time source 것이므로 삭제
+
       RCLCPP_DEBUG(get_logger(), "Removing object history due to time source mismatch: %s", e.what());
+
       it = object_history_.erase(it);
+
     }
+
   }
+
 }
 
-bool AbnormalBehaviorDetectorNode::isAbnormalBehaviorConfirmed(
-  const std::string & object_id, AbnormalBehaviorType type)
-{
-  const auto it = object_history_.find(object_id);
-  if (it == object_history_.end()) {
-    return false;
-  }
 
-  if (type == AbnormalBehaviorType::WRONG_WAY) {
-    return it->second.consecutive_wrong_way_count >= consecutive_count_threshold_;
-  }
-
-  return false;
-}
 
 std::string AbnormalBehaviorDetectorNode::uuidToString(
+
   const unique_identifier_msgs::msg::UUID & uuid)
 {
   std::stringstream ss;

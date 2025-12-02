@@ -78,9 +78,7 @@ struct AbnormalBehaviorInfo
 struct ObjectAbnormalHistory
 {
   std::string object_id;
-  std::vector<AbnormalBehaviorType> history;  // 최근 N프레임의 이상 거동 이력
   rclcpp::Time last_update_time;
-  int consecutive_wrong_way_count;  // 연속 역주행 카운트
   // KMS_251113: Heading 안정화를 위한 이력 (보행자 오검출 방지)
   std::vector<double> heading_history;  // 최근 N프레임의 yaw 각도 (라디안)
 };
@@ -120,7 +118,6 @@ private:
   double dist_threshold_for_searching_lanelet_;   // 차선 검색 거리 임계값
   double delta_yaw_threshold_for_searching_lanelet_;  // 차선 검색 각도 임계값
   double wrong_way_angle_threshold_;  // 역주행 판단 각도 임계값 (라디안)
-  int consecutive_count_threshold_;   // 이상 거동 확정을 위한 연속 프레임 수
   double min_speed_for_wrong_way_;    // 역주행 검출 최소 속도 임계값 (m/s)
   double speed_threshold_ratio_;      // 과속/저속 판단 비율
   double min_speed_threshold_;        // 정차 판단 속도 임계값
@@ -226,19 +223,12 @@ private:
   /**
    * @brief 객체 이력 업데이트
    */
-  void updateObjectHistory(
-    const std::string & object_id, AbnormalBehaviorType behavior_type,
-    const rclcpp::Time & current_time);
+  void updateObjectHistory(const std::string & object_id, const rclcpp::Time & current_time);
 
   /**
    * @brief 오래된 이력 삭제
    */
   void cleanupOldHistory(const rclcpp::Time & current_time);
-
-  /**
-   * @brief 이상 거동 확정 여부 판단 (연속 프레임 확인)
-   */
-  bool isAbnormalBehaviorConfirmed(const std::string & object_id, AbnormalBehaviorType type);
 
   /**
    * @brief UUID를 string으로 변환
