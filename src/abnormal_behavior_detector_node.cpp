@@ -993,16 +993,6 @@ visualization_msgs::msg::MarkerArray AbnormalBehaviorDetectorNode::createDebugMa
       visual_marker.type = visualization_msgs::msg::Marker::CUBE;
       visual_marker.pose = object.kinematics.initial_pose_with_covariance.pose;
 
-      // 반시계방향 90도 회전 적용 (직육면체도 동일하게)
-      tf2::Quaternion rotation;
-      rotation.setRPY(0, 0, M_PI / 2.0);
-
-      tf2::Quaternion original_orientation;
-      tf2::fromMsg(object.kinematics.initial_pose_with_covariance.pose.orientation, original_orientation);
-
-      tf2::Quaternion combined_orientation = original_orientation * rotation;
-      visual_marker.pose.orientation = tf2::toMsg(combined_orientation);
-
       // 객체의 실제 크기 사용
       if (object.shape.type == autoware_auto_perception_msgs::msg::Shape::BOUNDING_BOX) {
         visual_marker.scale.x = object.shape.dimensions.x;

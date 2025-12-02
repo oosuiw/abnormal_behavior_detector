@@ -34,7 +34,7 @@
     # 3D 모델 사용 여부
     # - true: 클래스별 3D 모델로 시각화 (car.obj, truck.obj 등)
     # - false: 기존 방식 (빨간색 직육면체)
-    use_3d_model_visualization: true
+    use_3d_model_visualization: false
 
     # ============================================
     # 객체 클래스별 시각화 색상
